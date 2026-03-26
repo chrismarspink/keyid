@@ -1,0 +1,96 @@
+{
+  "name": "KeyID — 디지털 신원",
+  "short_name": "KeyID",
+  "description": "PKI 기반 디지털 신원 인증 — 서명, 암호화, 검증",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "portrait-primary",
+  "background_color": "#1e2433",
+  "theme_color": "#141926",
+  "lang": "ko",
+  "id": "com.keyid.app",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "screenshots": [],
+  "file_handlers": [
+    {
+      "action": "/file/sign",
+      "accept": { "application/pkis": [".pkis"] },
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }],
+      "launch_type": "single-client"
+    },
+    {
+      "action": "/file/cert",
+      "accept": { "application/pkis-cert": [".pkis-cert"] },
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }],
+      "launch_type": "single-client"
+    },
+    {
+      "action": "/file/request",
+      "accept": { "application/pkis-req": [".pkis-req"] },
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }],
+      "launch_type": "single-client"
+    },
+    {
+      "action": "/file/key",
+      "accept": { "application/pkis-key": [".pkis-key"] },
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }],
+      "launch_type": "single-client"
+    },
+    {
+      "action": "/file/verify",
+      "accept": { "application/pkis-sig": [".pkis-sig"] },
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }],
+      "launch_type": "single-client"
+    }
+  ],
+  "share_target": {
+    "action": "/share",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "files": [
+        {
+          "name": "file",
+          "accept": ["application/pkis", ".pkis", ".pkis-cert", ".pkis-sig", ".pkis-req", ".pkis-key"]
+        }
+      ]
+    }
+  },
+  "protocol_handlers": [
+    { "protocol": "web+keyid", "url": "/protocol?url=%s" }
+  ]
+}

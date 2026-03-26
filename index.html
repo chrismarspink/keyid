@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+
+    <!-- PWA / theme -->
+    <meta name="theme-color" content="#141926" />
+    <meta name="background-color" content="#1e2433" />
+
+    <!-- Apple PWA — hides Safari URL bar when added to home screen -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="KeyID" />
+    <meta name="mobile-web-app-capable" content="yes" />
+
+    <!-- Icons -->
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+
+    <!-- Splash screens (iOS) -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
+    <title>KeyID</title>
+    <link href="/keyid/_app/immutable/entry/start.CWTfAqwK.js" rel="modulepreload">
+		<link href="/keyid/_app/immutable/chunks/DSBNTpo2.js" rel="modulepreload">
+		<link href="/keyid/_app/immutable/chunks/yZ6NqXmM.js" rel="modulepreload">
+		<link href="/keyid/_app/immutable/entry/app.B0dSMxnr.js" rel="modulepreload">
+		<link href="/keyid/_app/immutable/chunks/Ndc8TQps.js" rel="modulepreload">
+		
+  </head>
+  <body data-sveltekit-preload-data="hover" style="background:#1e2433">
+    <div id="svelte">
+			<script>
+				{
+					__sveltekit_f3z20k = {
+						base: "/keyid",
+						assets: "/keyid"
+					};
+
+					const element = document.currentScript.parentElement;
+
+					Promise.all([
+						import("/keyid/_app/immutable/entry/start.CWTfAqwK.js"),
+						import("/keyid/_app/immutable/entry/app.B0dSMxnr.js")
+					]).then(([kit, app]) => {
+						kit.start(app, element);
+					});
+				}
+			</script>
+		</div>
+  </body>
+</html>
