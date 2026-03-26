@@ -6,7 +6,7 @@
     "dev": "vite dev --host",
     "dev:mobile": "concurrently \"vite dev --host\" \"npx ngrok http 5173\"",
     "build": "vite build",
-    "deploy": "NODE_ENV=production npm run build && touch build/.nojekyll && gh-pages -d build --dotfiles",
+    "deploy": "NODE_ENV=production npm run build && touch build/.nojekyll && cp build/index.html build/404.html && gh-pages -d build --dotfiles",
     "preview": "vite preview --host",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
   },

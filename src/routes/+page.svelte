@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import IDCard from '$components/IDCard.svelte';
+  import IDCardWide from '$components/IDCardWide.svelte';
   import { loadIdentity, saveIdentity, type IdentityRecord } from '$lib/storage/keystore';
   import { generateKeyPair, exportPrivateKeyPkcs8, exportPublicKeySpki } from '$lib/crypto/keygen';
   import { generateSelfSignedCert } from '$lib/crypto/cert';
@@ -176,16 +176,19 @@
     </div>
 
     <!-- ID Card — full width -->
-    <div class="panel flex items-center justify-center mb-4 overflow-hidden" style="padding:0">
-      <IDCard
+    <div class="panel overflow-hidden mb-4" style="padding:0">
+      <IDCardWide
         commonName={identity.commonName}
         email={identity.email}
         organization={identity.organization}
         country={identity.country}
         fingerprint={identity.fingerprint}
+        notBefore={identity.notBefore}
         notAfter={identity.notAfter}
+        serialNumber={identity.serialNumber}
         avatar={identity.avatar}
         trustLevel="self"
+        showActions={false}
       />
     </div>
 

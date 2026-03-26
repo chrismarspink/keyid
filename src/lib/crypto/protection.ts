@@ -25,16 +25,10 @@ export interface SealedKey {
  */
 export async function isWebAuthnPRFSupported(): Promise<boolean> {
   if (typeof window === 'undefined') return false;
-  if (!window.PublicKeyCredential) return false;
-  try {
-    const available = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
-    if (!available) return false;
-    // PRF is in extensions; we can only verify at creation/assertion time.
-    // We signal "likely supported" if platform authenticator is available on a secure context.
-    return window.isSecureContext;
-  } catch {
-    return false;
-  }
+  if (!window.PublicKeyCredential || !window.isSecureContext) return false;
+  // Show WebAuthn option if the browser supports it at all.
+  // PRF support is confirmed at actual use time; failures fall back to password.
+  return true;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
