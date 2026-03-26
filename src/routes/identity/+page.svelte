@@ -15,8 +15,54 @@
     isWebAuthnPRFSupported, sealWithWebAuthn, sealWithPassword,
     unsealKey, type SealedKey
   } from '$lib/crypto/protection';
+  import { generateIdenticon } from '$lib/crypto/identicon';
   import { renderCardToPng } from '$lib/share/card';
   import { downloadFile } from '$lib/fileHandler';
+
+  // Avatar editing
+  let avatarInput: HTMLInputElement;
+  let updatingAvatar = false;
+
+  async function resizeAvatar(file: File): Promise<string> {
+    return new Promise((resolve) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const maxSz = 256;
+        const scale = Math.min(maxSz / img.width, maxSz / img.height, 1);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      };
+      img.src = url;
+    });
+  }
+
+  async function handleAvatarChange(e: Event) {
+    const file = (e.currentTarget as HTMLInputElement).files?.[0];
+    if (!file || !identity) return;
+    updatingAvatar = true;
+    try {
+      const dataUrl = await resizeAvatar(file);
+      const updated = { ...identity, avatar: dataUrl };
+      await saveIdentity(updated);
+      identity = updated;
+      showToast('사진이 업데이트되었습니다.', 'success');
+    } finally {
+      updatingAvatar = false;
+    }
+  }
+
+  async function removeAvatar() {
+    if (!identity) return;
+    const updated = { ...identity, avatar: generateIdenticon(identity.commonName + identity.email) };
+    await saveIdentity(updated);
+    identity = updated;
+    showToast('아이콘으로 변경되었습니다.', 'info');
+  }
 
   let identity: IdentityRecord | null = null;
   let expiredIdentities: ExpiredIdentityRecord[] = [];
@@ -29,6 +75,7 @@
   // Renewal state
   let showRenewDialog = false;
   let renewMode: 'same-key' | 'new-key' | null = null;
+  let renewYears = 1;
   let renewPassword = '';
   let renewNewPassword = '';
   let renewNewPasswordConfirm = '';
@@ -76,7 +123,10 @@
         preferPassword: renewUnlockMethod === 'password'
       });
 
-      // Archive current identity before replacing
+      // Archive current identity before replacing — preserve key for reuse (password only)
+      const archivedSealedKey: SealedKey | null =
+        identity.passwordBackup ??
+        (identity.sealedKey.method === 'password' ? identity.sealedKey : null);
       await archiveIdentity({
         commonName: identity.commonName,
         email: identity.email,
@@ -87,7 +137,9 @@
         notBefore: identity.notBefore,
         notAfter: identity.notAfter,
         serialNumber: identity.serialNumber,
-        revokedAt: new Date().toISOString()
+        revokedAt: new Date().toISOString(),
+        avatar: identity.avatar ?? null,
+        sealedKey: archivedSealedKey
       });
 
       let newPkcs8 = pkcs8;
@@ -102,7 +154,7 @@
           email: identity.email || undefined,
           organization: identity.organization || undefined,
           country: identity.country || undefined
-        });
+        }, renewYears);
       } else {
         // Generate entirely new key pair
         const keyPair = await generateKeyPair();
@@ -279,8 +331,8 @@
       </div>
     </div>
 
-    <!-- Wide card -->
-    <div class="mb-6 overflow-x-auto">
+    <!-- Wide card + avatar edit -->
+    <div class="mb-3 overflow-x-auto relative">
       <IDCardWide
         commonName={identity.commonName}
         email={identity.email}
@@ -296,6 +348,23 @@
         on:download={downloadCert}
         on:qr={openQR}
       />
+    </div>
+    <!-- Avatar edit controls -->
+    <div class="flex items-center gap-2 mb-5">
+      <button
+        class="btn-secondary text-xs py-1.5 px-3"
+        on:click={() => avatarInput.click()}
+        disabled={updatingAvatar}
+      >
+        {updatingAvatar ? '저장 중…' : '📷 사진 변경'}
+      </button>
+      {#if identity.avatar && !identity.avatar.startsWith('data:image/svg')}
+        <button class="btn-secondary text-xs py-1.5 px-3" on:click={removeAvatar}>
+          아이콘으로 초기화
+        </button>
+      {/if}
+      <input bind:this={avatarInput} type="file" accept="image/*" class="hidden"
+        on:change={handleAvatarChange} />
     </div>
 
     <!-- Details panel -->
@@ -394,23 +463,50 @@
       </button>
     </div>
 
-    <!-- Expired identities -->
+    <!-- Archived identities -->
     {#if expiredIdentities.length > 0}
       <div class="panel mb-4">
-        <h3 class="font-semibold mb-3" style="color:var(--text)">만료된 신원 ({expiredIdentities.length})</h3>
+        <h3 class="font-semibold mb-3" style="color:var(--text)">보관된 과거 신원 ({expiredIdentities.length})</h3>
+        <p class="text-xs mb-3" style="color:var(--text-muted)">
+          과거 신원은 서명·암호화 시 선택 사용할 수 있습니다 (백업 비밀번호 필요).
+        </p>
         <div class="space-y-2">
           {#each expiredIdentities as expired}
-            <div class="rounded-lg p-3 text-sm" style="background:rgba(0,0,0,0.15); border:1px solid var(--border)">
-              <div class="flex items-center justify-between gap-2">
+            <div class="rounded-xl p-3" style="background:rgba(0,0,0,0.2); border:1px solid var(--border)">
+              <div class="flex items-center gap-3">
+                <!-- Avatar -->
+                <div class="w-10 h-10 rounded-full overflow-hidden flex-shrink-0">
+                  {#if expired.avatar}
+                    <img src={expired.avatar} alt={expired.commonName} class="w-full h-full object-cover" />
+                  {:else}
+                    <div class="w-full h-full flex items-center justify-center text-sm font-bold"
+                      style="background:linear-gradient(135deg,#2d3748,#1a202c); color:#a0aec0">
+                      {expired.commonName[0]?.toUpperCase() ?? '?'}
+                    </div>
+                  {/if}
+                </div>
                 <div class="flex-1 min-w-0">
-                  <div class="font-medium truncate" style="color:var(--text)">{expired.commonName}</div>
-                  <div class="text-xs mt-0.5 font-mono truncate" style="color:var(--text-muted)">
+                  <div class="font-medium text-sm truncate" style="color:var(--text)">{expired.commonName}</div>
+                  <div class="text-xs font-mono truncate" style="color:var(--text-muted)">
                     {expired.fingerprint.split(':').slice(0,4).join(':')}…
                   </div>
+                  <div class="text-xs mt-0.5" style="color:var(--text-dim)">
+                    만료 {new Date(expired.notAfter).toLocaleDateString('ko-KR')} ·
+                    폐지 {new Date(expired.revokedAt).toLocaleDateString('ko-KR')}
+                  </div>
                 </div>
-                <div class="text-xs text-right flex-shrink-0" style="color:var(--text-muted)">
-                  <div>만료: {new Date(expired.notAfter).toLocaleDateString('ko-KR')}</div>
-                  <div>폐지: {new Date(expired.revokedAt).toLocaleDateString('ko-KR')}</div>
+                <div class="flex flex-col gap-1 flex-shrink-0">
+                  {#if expired.sealedKey}
+                    <a href="{base}/file/sign?archived={expired.id}"
+                      class="text-xs px-2.5 py-1 rounded-lg font-medium"
+                      style="background:rgba(59,130,246,0.15); color:#60a5fa">
+                      서명
+                    </a>
+                  {:else}
+                    <span class="text-xs px-2 py-1 rounded-lg" style="color:var(--text-dim); background:rgba(0,0,0,0.2)">
+                      키 없음
+                    </span>
+                  {/if}
                 </div>
               </div>
             </div>
@@ -447,7 +543,7 @@
             on:click={() => (renewMode = 'same-key')}
           >
             <div class="font-semibold text-sm mb-1" style="color:var(--text)">🔑 키 유지 갱신</div>
-            <div class="text-xs" style="color:var(--text-muted)">기존 키를 유지하고 인증서 유효기간만 3년 연장</div>
+            <div class="text-xs" style="color:var(--text-muted)">기존 키를 유지하고 인증서 유효기간 연장 (1년 단위)</div>
           </button>
           <button
             class="w-full text-left p-4 rounded-xl border-2 transition"
@@ -466,6 +562,23 @@
           <p class="text-sm font-medium" style="color:var(--text)">
             {renewMode === 'same-key' ? '키 유지 갱신' : '새 키 발급'} — 현재 키 인증
           </p>
+
+          {#if renewMode === 'same-key'}
+            <div>
+              <p class="text-xs mb-1.5" style="color:var(--text-muted)">연장 기간</p>
+              <div class="flex gap-1.5">
+                {#each [1, 2, 3] as y}
+                  <button
+                    class="flex-1 py-1.5 rounded-lg text-sm font-semibold transition"
+                    style={renewYears === y
+                      ? 'background:#1d6ef5; color:white'
+                      : 'background:var(--bg); color:var(--text-muted); border:1px solid var(--border-mid)'}
+                    on:click={() => (renewYears = y)}
+                  >{y}년</button>
+                {/each}
+              </div>
+            </div>
+          {/if}
 
           {#if identity.sealedKey.method === 'webauthn' && identity.passwordBackup}
             <div class="flex rounded-lg overflow-hidden" style="border:1px solid var(--border-mid)">

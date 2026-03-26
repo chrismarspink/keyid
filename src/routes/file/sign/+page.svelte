@@ -2,23 +2,35 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { base } from '$app/paths';
-  import { loadIdentity, saveFileRecord, type IdentityRecord } from '$lib/storage/keystore';
+  import {
+    loadIdentity, saveFileRecord, getAllExpiredIdentities,
+    type IdentityRecord, type ExpiredIdentityRecord
+  } from '$lib/storage/keystore';
   import { unsealKey } from '$lib/crypto/protection';
   import { importPrivateKeyPkcs8 } from '$lib/crypto/keygen';
   import { signData } from '$lib/crypto/cms';
   import { downloadFile, retrieveLaunchedFile } from '$lib/fileHandler';
+  import { page } from '$app/stores';
 
   let identity: IdentityRecord | null = null;
+  let archivedIdentities: ExpiredIdentityRecord[] = [];
+
+  // Signer selection: 'current' = active identity, 'archived' = past identity
+  let signerMode: 'current' | 'archived' = 'current';
+  let selectedArchivedId: number | null = null;
+  let archivedPassword = '';
+  $: selectedArchived = archivedIdentities.find(a => a.id === selectedArchivedId) ?? null;
+
   let selectedFile: File | null = null;
   let password = '';
   let signing = false;
   let done = false;
-  let signResult: { fileName: string; sigFile: string } | null = null;
+  let signResult: { fileName: string; sigFile: string; signerName: string } | null = null;
   let error = '';
   let dropActive = false;
   let fileInput: HTMLInputElement;
 
-  // Method toggle: biometric or password
+  // Method toggle: biometric or password (current identity only)
   let unlockMethod: 'biometric' | 'password' = 'biometric';
 
   $: hasBiometric = identity?.sealedKey.method === 'webauthn';
@@ -35,6 +47,17 @@
     identity = await loadIdentity();
     if (!identity) { goto(base + '/'); return; }
     unlockMethod = identity.sealedKey.method === 'webauthn' ? 'biometric' : 'password';
+    archivedIdentities = (await getAllExpiredIdentities()).filter(a => !!a.sealedKey);
+    // Pre-select archived identity from query param (from identity page)
+    const archivedParam = $page.url.searchParams.get('archived');
+    if (archivedParam) {
+      const id = parseInt(archivedParam);
+      const found = archivedIdentities.find(a => a.id === id);
+      if (found) {
+        signerMode = 'archived';
+        selectedArchivedId = id;
+      }
+    }
     const launched = retrieveLaunchedFile();
     if (launched) selectedFile = new File([launched.data], launched.name, { type: launched.type });
   });
@@ -53,21 +76,38 @@
   }
 
   async function sign() {
-    if (!selectedFile || !identity) return;
+    if (!selectedFile) return;
     error = '';
     signing = true;
     try {
-      const pkcs8 = await unsealKey({
-        sealed: identity.sealedKey,
-        passwordBackup: identity.passwordBackup ?? undefined,
-        password: unlockMethod === 'password' ? password : undefined,
-        preferPassword: unlockMethod === 'password'
-      });
+      let pkcs8: ArrayBuffer;
+      let certDer: ArrayBuffer;
+      let signerName: string;
+
+      if (signerMode === 'archived' && selectedArchived?.sealedKey) {
+        // Sign with archived identity (password only)
+        pkcs8 = await unsealKey({
+          sealed: selectedArchived.sealedKey,
+          password: archivedPassword,
+          preferPassword: true
+        });
+        const bin = atob(selectedArchived.certDer);
+        certDer = Uint8Array.from(bin, c => c.charCodeAt(0)).buffer;
+        signerName = selectedArchived.commonName;
+      } else {
+        if (!identity) return;
+        pkcs8 = await unsealKey({
+          sealed: identity.sealedKey,
+          passwordBackup: identity.passwordBackup ?? undefined,
+          password: unlockMethod === 'password' ? password : undefined,
+          preferPassword: unlockMethod === 'password'
+        });
+        const bin = atob(identity.certDer);
+        certDer = Uint8Array.from(bin, c => c.charCodeAt(0)).buffer;
+        signerName = identity.commonName;
+      }
+
       const privateKey = await importPrivateKeyPkcs8(pkcs8);
-
-      const certBin = atob(identity.certDer);
-      const certDer = Uint8Array.from(certBin, c => c.charCodeAt(0)).buffer;
-
       const fileData = await selectedFile.arrayBuffer();
       const result = await signData(fileData, privateKey, certDer);
 
@@ -75,18 +115,17 @@
       const sigFileName = `${baseName}.pkis-sig`;
       downloadFile(result.der, sigFileName, 'application/pkis-sig');
 
-      // Save to file history
       await saveFileRecord({
         name: sigFileName,
         originalName: selectedFile.name,
         type: 'signed',
         size: result.der.byteLength,
         createdAt: new Date().toISOString(),
-        signerName: identity.commonName,
+        signerName,
         data: result.der
       });
 
-      signResult = { fileName: selectedFile.name, sigFile: sigFileName };
+      signResult = { fileName: selectedFile.name, sigFile: sigFileName, signerName };
       done = true;
       showToast('서명이 완료되었습니다.', 'success');
     } catch (e) {
@@ -99,6 +138,7 @@
   function reset() {
     selectedFile = null;
     password = '';
+    archivedPassword = '';
     done = false;
     signResult = null;
     error = '';
@@ -181,9 +221,71 @@
       {/if}
     </div>
 
+    <!-- Signer selection (if archived identities exist) -->
+    {#if archivedIdentities.length > 0}
+      <div class="panel mb-4">
+        <h2 class="text-sm font-semibold mb-3" style="color:var(--text)">서명자 선택</h2>
+        <div class="space-y-2">
+          <!-- Current -->
+          <button
+            class="w-full flex items-center gap-3 p-3 rounded-xl transition text-left"
+            style={signerMode === 'current'
+              ? 'background:rgba(59,130,246,0.15); border:1px solid #3b82f6'
+              : 'background:var(--bg); border:1px solid var(--border-mid)'}
+            on:click={() => { signerMode = 'current'; selectedArchivedId = null; }}
+          >
+            <div class="w-8 h-8 rounded-full overflow-hidden flex-shrink-0">
+              {#if identity?.avatar}
+                <img src={identity.avatar} alt="" class="w-full h-full object-cover" />
+              {:else}
+                <div class="w-full h-full flex items-center justify-center text-xs font-bold"
+                  style="background:#1d6ef5; color:white">{identity?.commonName[0] ?? '?'}</div>
+              {/if}
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-medium truncate" style="color:var(--text)">{identity?.commonName}</div>
+              <div class="text-xs" style="color:var(--text-muted)">현재 신원 (활성)</div>
+            </div>
+            {#if signerMode === 'current'}
+              <div class="w-4 h-4 rounded-full flex-shrink-0" style="background:#3b82f6"></div>
+            {/if}
+          </button>
+
+          <!-- Archived -->
+          {#each archivedIdentities as arch}
+            <button
+              class="w-full flex items-center gap-3 p-3 rounded-xl transition text-left"
+              style={signerMode === 'archived' && selectedArchivedId === arch.id
+                ? 'background:rgba(245,158,11,0.15); border:1px solid #f59e0b'
+                : 'background:var(--bg); border:1px solid var(--border-mid)'}
+              on:click={() => { signerMode = 'archived'; selectedArchivedId = arch.id ?? null; }}
+            >
+              <div class="w-8 h-8 rounded-full overflow-hidden flex-shrink-0">
+                {#if arch.avatar}
+                  <img src={arch.avatar} alt="" class="w-full h-full object-cover" />
+                {:else}
+                  <div class="w-full h-full flex items-center justify-center text-xs font-bold"
+                    style="background:#78716c; color:white">{arch.commonName[0] ?? '?'}</div>
+                {/if}
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="text-sm font-medium truncate" style="color:var(--text)">{arch.commonName}</div>
+                <div class="text-xs" style="color:var(--text-muted)">
+                  폐지됨 · {new Date(arch.revokedAt).toLocaleDateString('ko-KR')}
+                </div>
+              </div>
+              {#if signerMode === 'archived' && selectedArchivedId === arch.id}
+                <div class="w-4 h-4 rounded-full flex-shrink-0" style="background:#f59e0b"></div>
+              {/if}
+            </button>
+          {/each}
+        </div>
+      </div>
+    {/if}
+
     <!-- Key unlock method -->
     <div class="panel mb-4">
-      <h2 class="text-sm font-semibold text-gray-700 mb-3">키 잠금 해제</h2>
+      <h2 class="text-sm font-semibold mb-3" style="color:var(--text)">키 잠금 해제</h2>
 
       {#if showMethodToggle}
         <div class="flex gap-2 p-1 bg-gray-100 rounded-xl mb-3">
@@ -218,7 +320,19 @@
         </div>
       {/if}
 
-      {#if unlockMethod === 'password' || identity?.sealedKey.method === 'password'}
+      {#if signerMode === 'archived'}
+        <!-- Archived identity: password only -->
+        <div class="p-3 rounded-xl text-sm mb-2" style="background:rgba(245,158,11,0.1); color:#fbbf24">
+          ⚠️ 보관된 신원은 백업 비밀번호로만 사용할 수 있습니다.
+        </div>
+        <input
+          class="input"
+          type="password"
+          placeholder="백업 비밀번호"
+          bind:value={archivedPassword}
+          on:keydown={(e) => e.key === 'Enter' && selectedFile && sign()}
+        />
+      {:else if unlockMethod === 'password' || identity?.sealedKey.method === 'password'}
         <input
           class="input"
           type="password"

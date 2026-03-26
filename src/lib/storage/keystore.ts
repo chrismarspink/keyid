@@ -51,6 +51,10 @@ export interface ExpiredIdentityRecord {
   serialNumber: string;
   /** ISO date when this identity was archived */
   revokedAt: string;
+  /** Avatar data URL (copied from IdentityRecord at archive time) */
+  avatar?: string | null;
+  /** Password-sealed key so the archived identity can still sign documents */
+  sealedKey?: SealedKey | null;
 }
 
 export interface FileRecord {

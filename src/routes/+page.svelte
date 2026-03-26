@@ -6,6 +6,7 @@
   import { loadIdentity, saveIdentity, type IdentityRecord } from '$lib/storage/keystore';
   import { generateKeyPair, exportPrivateKeyPkcs8, exportPublicKeySpki } from '$lib/crypto/keygen';
   import { generateSelfSignedCert } from '$lib/crypto/cert';
+  import { generateIdenticon } from '$lib/crypto/identicon';
   import {
     isWebAuthnPRFSupported,
     sealWithWebAuthn,
@@ -34,6 +35,28 @@
   let backupPassword = '';
   let backupPasswordConfirm = '';
   let formError = '';
+
+  // Avatar
+  let avatarDataUrl = '';
+  let avatarInput: HTMLInputElement;
+
+  async function resizeAvatar(file: File): Promise<string> {
+    return new Promise((resolve) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const maxSz = 256;
+        const scale = Math.min(maxSz / img.width, maxSz / img.height, 1);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      };
+      img.src = url;
+    });
+  }
 
   // Toast
   let toastMsg = '';
@@ -128,7 +151,7 @@
         sealedKey,
         passwordBackup,
         createdAt: new Date().toISOString(),
-        avatar: null
+        avatar: avatarDataUrl || generateIdenticon(form.commonName + form.email)
       };
       await saveIdentity(record);
       identity = record;
@@ -280,6 +303,45 @@
       </div>
 
       <div class="panel space-y-4">
+        <!-- Avatar upload -->
+        <div class="flex flex-col items-center gap-3 mb-4">
+          <div class="relative w-20 h-20">
+            {#if avatarDataUrl}
+              <img src={avatarDataUrl} alt="avatar" class="w-20 h-20 rounded-full object-cover border-2 border-blue-400" />
+            {:else}
+              <div class="w-20 h-20 rounded-full flex items-center justify-center text-2xl font-bold border-2 border-dashed"
+                style="background:rgba(59,130,246,0.1); border-color:var(--border-mid); color:var(--text-muted)">
+                {form.commonName ? form.commonName[0].toUpperCase() : '?'}
+              </div>
+            {/if}
+            <button
+              type="button"
+              class="absolute bottom-0 right-0 w-7 h-7 rounded-full flex items-center justify-center"
+              style="background:#1d6ef5"
+              on:click={() => avatarInput.click()}
+            >
+              <svg class="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                  d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/>
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/>
+              </svg>
+            </button>
+          </div>
+          <p class="text-xs" style="color:var(--text-muted)">
+            사진 없으면 자동 아이콘 생성
+          </p>
+          <input
+            bind:this={avatarInput}
+            type="file"
+            accept="image/*"
+            class="hidden"
+            on:change={async (e) => {
+              const f = e.currentTarget.files?.[0];
+              if (f) avatarDataUrl = await resizeAvatar(f);
+            }}
+          />
+        </div>
+
         <div>
           <label class="label" for="cn">이름 <span class="text-red-400">*</span></label>
           <input
