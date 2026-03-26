@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { base } from '$app/paths';
   import IDCard from '$components/IDCard.svelte';
   import TrustBadge from '$components/TrustBadge.svelte';
   import { getAllContacts, addContact, type Contact } from '$lib/storage/contacts';
@@ -183,7 +184,7 @@
     <div class="space-y-3">
       {#each filtered as contact}
         <a
-          href="/contacts/{contact.id}"
+          href="{base}/contacts/{contact.id}"
           class="panel flex items-center gap-3 hover:shadow-md transition-shadow"
         >
           <!-- Avatar -->

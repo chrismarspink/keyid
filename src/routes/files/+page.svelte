@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import { base } from '$app/paths';
   import { getAllFileRecords, deleteFileRecord, type FileRecord } from '$lib/storage/keystore';
   import { downloadFile } from '$lib/fileHandler';
 
@@ -74,7 +75,7 @@
     const b64 = btoa(String.fromCharCode(...new Uint8Array(r.data)));
     sessionStorage.setItem('verify_sig_name', r.name);
     sessionStorage.setItem('verify_sig_data', b64);
-    goto('/file/verify');
+    goto(base + '/file/verify');
   }
 
   function formatBytes(n: number): string {
@@ -108,20 +109,20 @@
       </span>
     </div>
     <div class="flex items-center gap-2">
-      <a href="/file/verify" class="btn-secondary text-xs py-1.5 px-3 gap-1.5">
+      <a href="{base}/file/verify" class="btn-secondary text-xs py-1.5 px-3 gap-1.5">
         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
         </svg>
         서명 검증
       </a>
-      <a href="/file/sign" class="btn-secondary text-xs py-1.5 px-3 gap-1.5">
+      <a href="{base}/file/sign" class="btn-secondary text-xs py-1.5 px-3 gap-1.5">
         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
             d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/>
         </svg>
         파일 서명
       </a>
-      <a href="/file/encrypt" class="btn-primary text-xs py-1.5 px-3 gap-1.5">
+      <a href="{base}/file/encrypt" class="btn-primary text-xs py-1.5 px-3 gap-1.5">
         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
             d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
@@ -223,8 +224,8 @@
         {#if filter === 'all' && !search}
           <p class="text-xs mt-1" style="color:var(--text-dim)">파일을 서명하거나 암호화하면 여기에 표시됩니다.</p>
           <div class="flex gap-2 mt-4">
-            <a href="/file/sign" class="btn-secondary text-xs py-1.5 px-3">파일 서명</a>
-            <a href="/file/encrypt" class="btn-primary text-xs py-1.5 px-3">암호화</a>
+            <a href="{base}/file/sign" class="btn-secondary text-xs py-1.5 px-3">파일 서명</a>
+            <a href="{base}/file/encrypt" class="btn-primary text-xs py-1.5 px-3">암호화</a>
           </div>
         {/if}
       </div>
@@ -313,7 +314,7 @@
               </button>
             {:else}
               <button class="btn-icon w-7 h-7 rounded" title="복호화"
-                style="color:#c084fc" on:click={() => goto('/file/encrypt')}>
+                style="color:#c084fc" on:click={() => goto(base + '/file/encrypt')}>
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                     d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"/>

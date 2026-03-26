@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import { base } from '$app/paths';
   import IDCardWide from '$components/IDCardWide.svelte';
   import QRCode from '$components/QRCode.svelte';
   import {
@@ -248,7 +249,7 @@
 
   async function confirmDelete() {
     await deleteIdentity();
-    goto('/');
+    goto(base + '/');
   }
 
   $: certShortFp = identity?.fingerprint
@@ -267,7 +268,7 @@
 {:else if !identity}
   <div class="flex flex-col items-center justify-center min-h-screen gap-4 px-4 text-center">
     <p class="text-gray-500">신원이 없습니다.</p>
-    <a href="/" class="btn-primary">신원 만들기</a>
+    <a href="{base}/" class="btn-primary">신원 만들기</a>
   </div>
 {:else}
   <div class="px-4 pt-6 pb-4 max-w-2xl mx-auto">

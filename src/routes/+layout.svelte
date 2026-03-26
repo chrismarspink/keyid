@@ -2,6 +2,7 @@
   import '../app.css';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
+  import { base } from '$app/paths';
   import { onMount } from 'svelte';
   import { registerLaunchQueueHandler, storeLaunchedFile } from '$lib/fileHandler';
   import InstallBanner from '$components/InstallBanner.svelte';
@@ -56,14 +57,15 @@
   $: currentPath = $page.url.pathname;
 
   function isActive(href: string) {
-    if (href === '/') return currentPath === '/';
-    return currentPath === href || currentPath.startsWith(href + '/') || currentPath.startsWith(href);
+    const fullHref = base + href;
+    if (href === '/') return currentPath === base + '/' || currentPath === base;
+    return currentPath === fullHref || currentPath.startsWith(fullHref + '/') || currentPath.startsWith(fullHref);
   }
 
   onMount(() => {
     registerLaunchQueueHandler(async ({ file, route }) => {
       await storeLaunchedFile(file);
-      goto(route);
+      goto(base + route);
     });
   });
 </script>
@@ -90,7 +92,7 @@
     <nav class="rail-nav">
       {#each navItems as item}
         {@const active = isActive(item.href)}
-        <a href={item.href} class="rail-item" class:rail-active={active} aria-label={item.label}>
+        <a href="{base}{item.href}" class="rail-item" class:rail-active={active} aria-label={item.label}>
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             {@html item.icon}
           </svg>
@@ -126,7 +128,7 @@
   <nav class="bottom-nav">
     {#each navItems as item}
       {@const active = isActive(item.href)}
-      <a href={item.href} class="nav-item" class:active>
+      <a href="{base}{item.href}" class="nav-item" class:active>
         {#if active}
           <span class="nav-pip"></span>
         {/if}

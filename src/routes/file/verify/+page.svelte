@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import { base } from '$app/paths';
   import { verifySignature } from '$lib/crypto/cms';
   import { retrieveLaunchedFile } from '$lib/fileHandler';
   import { isExpiredIdentityFingerprint } from '$lib/storage/keystore';
@@ -92,7 +93,7 @@
 <div class="max-w-xl mx-auto px-4 pt-6 pb-10">
   <!-- Header -->
   <div class="flex items-center gap-3 mb-6">
-    <button on:click={() => goto('/files')} class="btn-icon">
+    <button on:click={() => goto(base + '/files')} class="btn-icon">
       <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
       </svg>

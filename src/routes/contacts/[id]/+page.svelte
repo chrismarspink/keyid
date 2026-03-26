@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
+  import { base } from '$app/paths';
   import IDCard from '$components/IDCard.svelte';
   import TrustBadge from '$components/TrustBadge.svelte';
   import {
@@ -72,7 +73,7 @@
   async function confirmDelete() {
     if (!contact) return;
     await deleteContact(contact.id!);
-    goto('/contacts');
+    goto(base + '/contacts');
   }
 
   $: expDate = contact?.notAfter
@@ -96,14 +97,14 @@
 {:else if !contact}
   <div class="flex flex-col items-center justify-center min-h-screen gap-4 px-4">
     <p class="text-gray-500">연락처를 찾을 수 없습니다.</p>
-    <a href="/contacts" class="btn-secondary">연락처 목록으로</a>
+    <a href="{base}/contacts" class="btn-secondary">연락처 목록으로</a>
   </div>
 
 {:else}
   <div class="max-w-2xl mx-auto px-4 pt-6 pb-8">
     <!-- Header -->
     <div class="flex items-center gap-3 mb-6">
-      <button on:click={() => goto('/contacts')} class="btn-icon">
+      <button on:click={() => goto(base + '/contacts')} class="btn-icon">
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
         </svg>

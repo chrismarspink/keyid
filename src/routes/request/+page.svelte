@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import { base } from '$app/paths';
   import { loadIdentity, type IdentityRecord } from '$lib/storage/keystore';
   import { unsealKey } from '$lib/crypto/protection';
   import { importPrivateKeyPkcs8 } from '$lib/crypto/keygen';
@@ -25,7 +26,7 @@
 
   onMount(async () => {
     identity = await loadIdentity();
-    if (!identity) { goto('/'); return; }
+    if (!identity) { goto(base + '/'); return; }
     const launched = retrieveLaunchedFile();
     if (launched) requestFile = new File([launched.data], launched.name, { type: launched.type });
   });
@@ -96,7 +97,7 @@
 <div class="max-w-xl mx-auto px-4 pt-6 pb-10">
   <!-- Header -->
   <div class="flex items-center gap-3 mb-6">
-    <button on:click={() => goto('/')} class="btn-icon">
+    <button on:click={() => goto(base + '/')} class="btn-icon">
       <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
       </svg>
@@ -118,7 +119,7 @@
       <p class="text-sm text-gray-500">서명 파일이 다운로드되었습니다.</p>
       <div class="flex gap-3">
         <button on:click={reset} class="btn-secondary flex-1">다른 요청 처리</button>
-        <button on:click={() => goto('/')} class="btn-primary flex-1">홈으로</button>
+        <button on:click={() => goto(base + '/')} class="btn-primary flex-1">홈으로</button>
       </div>
     </div>
 

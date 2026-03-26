@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import { base } from '$app/paths';
   import { loadIdentity, saveFileRecord, getAllExpiredIdentities, type IdentityRecord } from '$lib/storage/keystore';
   import { getAllContacts, type Contact } from '$lib/storage/contacts';
   import { encryptForRecipients, decryptEnveloped } from '$lib/crypto/cms';
@@ -42,7 +43,7 @@
 
   onMount(async () => {
     identity = await loadIdentity();
-    if (!identity) { goto('/'); return; }
+    if (!identity) { goto(base + '/'); return; }
     contacts = await getAllContacts();
     unlockMethod = identity.sealedKey.method === 'webauthn' ? 'biometric' : 'password';
     const launched = retrieveLaunchedFile();
@@ -171,7 +172,7 @@
 <div class="max-w-xl mx-auto px-4 pt-6 pb-10">
   <!-- Header -->
   <div class="flex items-center gap-3 mb-6">
-    <button on:click={() => goto('/')} class="btn-icon">
+    <button on:click={() => goto(base + '/')} class="btn-icon">
       <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
       </svg>
@@ -211,7 +212,7 @@
         <p class="text-sm text-gray-500">.pkis 파일을 선택한 수신자에게 전달하세요.</p>
         <div class="flex gap-3">
           <button on:click={() => { done = false; selectedFile = null; }} class="btn-secondary flex-1">다른 파일</button>
-          <button on:click={() => goto('/files')} class="btn-primary flex-1">파일 목록</button>
+          <button on:click={() => goto(base + '/files')} class="btn-primary flex-1">파일 목록</button>
         </div>
       </div>
     {:else}

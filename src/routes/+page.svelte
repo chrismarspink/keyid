@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import { base } from '$app/paths';
   import IDCardWide from '$components/IDCardWide.svelte';
   import { loadIdentity, saveIdentity, type IdentityRecord } from '$lib/storage/keystore';
   import { generateKeyPair, exportPrivateKeyPkcs8, exportPublicKeySpki } from '$lib/crypto/keygen';
@@ -170,7 +171,7 @@
         <h1 class="text-xl font-bold" style="color:var(--text)">내 신원</h1>
         <p class="text-sm" style="color:var(--text-muted)">디지털 서명 인증서</p>
       </div>
-      <button on:click={() => goto('/identity')} class="btn-secondary text-sm py-2 px-4">
+      <button on:click={() => goto(base + '/identity')} class="btn-secondary text-sm py-2 px-4">
         자세히 보기
       </button>
     </div>
@@ -194,7 +195,7 @@
 
     <!-- 4 action widgets — uniform 2-column grid -->
     <div class="grid grid-cols-2 gap-3">
-      <a href="/file/sign" class="panel flex items-center gap-3 cursor-pointer transition-colors"
+      <a href="{base}/file/sign" class="panel flex items-center gap-3 cursor-pointer transition-colors"
         style="border-color:transparent"
         onmouseenter="this.style.borderColor='#3b82f6'"
         onmouseleave="this.style.borderColor='transparent'">
@@ -211,7 +212,7 @@
         </div>
       </a>
 
-      <a href="/file/encrypt" class="panel flex items-center gap-3 cursor-pointer transition-colors"
+      <a href="{base}/file/encrypt" class="panel flex items-center gap-3 cursor-pointer transition-colors"
         style="border-color:transparent"
         onmouseenter="this.style.borderColor='#a855f7'"
         onmouseleave="this.style.borderColor='transparent'">
@@ -228,7 +229,7 @@
         </div>
       </a>
 
-      <a href="/contacts" class="panel flex items-center gap-3 cursor-pointer transition-colors"
+      <a href="{base}/contacts" class="panel flex items-center gap-3 cursor-pointer transition-colors"
         style="border-color:transparent"
         onmouseenter="this.style.borderColor='#22c55e'"
         onmouseleave="this.style.borderColor='transparent'">
@@ -245,7 +246,7 @@
         </div>
       </a>
 
-      <a href="/request" class="panel flex items-center gap-3 cursor-pointer transition-colors"
+      <a href="{base}/request" class="panel flex items-center gap-3 cursor-pointer transition-colors"
         style="border-color:transparent"
         onmouseenter="this.style.borderColor='#f59e0b'"
         onmouseleave="this.style.borderColor='transparent'">
