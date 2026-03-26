@@ -1,0 +1,10 @@
+name = "keyid"
+compatibility_date = "2026-01-01"
+pages_build_output_dir = "./build"
+
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "keyid-shares"
+
+[env.production]
+name = "keyid"
