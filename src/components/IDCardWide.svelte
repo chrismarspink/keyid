@@ -2,6 +2,7 @@
   import { createEventDispatcher } from 'svelte';
   import TrustBadge from './TrustBadge.svelte';
   import type { TrustLevel } from '$lib/storage/contacts';
+  import { generateIdenticon } from '$lib/crypto/identicon';
 
   export let commonName = '';
   export let email = '';
@@ -14,6 +15,8 @@
   export let avatar: string | null = null;
   export let trustLevel: TrustLevel = 'self';
   export let showActions = true;
+
+  $: resolvedAvatar = avatar || generateIdenticon(commonName + email);
 
   const dispatch = createEventDispatcher<{
     share: void;
@@ -52,14 +55,7 @@
     class="absolute rounded-full overflow-hidden bg-blue-100 border-2 border-white shadow"
     style="left:78px;top:24px;width:80px;height:80px"
   >
-    {#if avatar}
-      <img src={avatar} alt={commonName} class="w-full h-full object-cover" />
-    {:else}
-      <div
-        class="w-full h-full flex items-center justify-center text-3xl font-bold text-navy-600"
-        style="background:linear-gradient(135deg,#dde8f2,#c7d5e8)"
-      >{initials || '?'}</div>
-    {/if}
+    <img src={resolvedAvatar} alt={commonName} class="w-full h-full object-cover" />
   </div>
 
   <!-- Main info -->

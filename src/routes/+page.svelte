@@ -3,9 +3,10 @@
   import { goto } from '$app/navigation';
   import { base } from '$app/paths';
   import IDCardWide from '$components/IDCardWide.svelte';
-  import { loadIdentity, saveIdentity, type IdentityRecord } from '$lib/storage/keystore';
+  import { loadIdentity, saveIdentity, loadSettings, type IdentityRecord } from '$lib/storage/keystore';
   import { generateKeyPair, exportPrivateKeyPkcs8, exportPublicKeySpki } from '$lib/crypto/keygen';
   import { generateSelfSignedCert } from '$lib/crypto/cert';
+  import { generateCSR } from '$lib/crypto/csr';
   import { generateIdenticon } from '$lib/crypto/identicon';
   import {
     isWebAuthnPRFSupported,
@@ -71,16 +72,47 @@
   }
 
   onMount(async () => {
-    identity = await loadIdentity();
+    const [id, settings] = await Promise.all([loadIdentity(), loadSettings()]);
+    identity = id;
     if (identity) {
       step = 'done';
     } else {
       step = 'form';
+      form.country = settings.defaultCountry || 'KR';
     }
     webAuthnAvailable = await isWebAuthnPRFSupported();
     if (webAuthnAvailable) protectMethod = 'webauthn';
     loading = false;
   });
+
+  // CSR download from creation form
+  let downloadingCSR = false;
+  async function downloadCSRFromForm() {
+    if (!form.commonName.trim()) { formError = '이름을 입력하세요.'; return; }
+    formError = '';
+    downloadingCSR = true;
+    try {
+      const kp = await generateKeyPair();
+      const result = await generateCSR(kp, {
+        commonName: form.commonName.trim(),
+        email: form.email.trim() || undefined,
+        organization: form.organization.trim() || undefined,
+        country: form.country.trim() || undefined
+      });
+      const blob = new Blob([result.csrDer], { type: 'application/pkcs10' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${form.commonName.trim().replace(/\s+/g, '_')}.csr`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      showToast('CSR 신청서가 다운로드되었습니다.', 'success');
+    } catch (e) {
+      showToast('CSR 생성 실패: ' + String(e), 'error');
+    } finally {
+      downloadingCSR = false;
+    }
+  }
 
   function validateForm(): boolean {
     if (!form.commonName.trim()) {
@@ -400,6 +432,18 @@
         >
           다음: 키 보호 방법 선택
         </button>
+
+        <!-- CSR option -->
+        <div class="border-t border-gray-100 pt-3 text-center">
+          <p class="text-xs text-gray-400 mb-2">또는 CA에 제출할 인증서 신청서(CSR)만 생성</p>
+          <button
+            class="btn-secondary text-sm py-2"
+            on:click={downloadCSRFromForm}
+            disabled={downloadingCSR}
+          >
+            {downloadingCSR ? 'CSR 생성 중…' : 'CSR 신청서 다운로드'}
+          </button>
+        </div>
       </div>
     </div>
   </div>

@@ -1,6 +1,7 @@
 <script lang="ts">
   import TrustBadge from './TrustBadge.svelte';
   import type { TrustLevel } from '$lib/storage/contacts';
+  import { generateIdenticon } from '$lib/crypto/identicon';
 
   export let commonName = '';
   export let email = '';
@@ -11,6 +12,8 @@
   export let avatar: string | null = null;
   export let trustLevel: TrustLevel = 'self';
   export let compact = false;
+
+  $: resolvedAvatar = avatar || generateIdenticon(commonName + email);
 
   $: initials = commonName
     .split(/\s+/)
@@ -69,14 +72,7 @@
       height:{compact ? 52 : 64}px;
     "
   >
-    {#if avatar}
-      <img src={avatar} alt={commonName} class="w-full h-full object-cover" />
-    {:else}
-      <div
-        class="w-full h-full flex items-center justify-center font-bold text-navy-600"
-        style="background:linear-gradient(135deg,#dde8f2,#c7d5e8); font-size:{compact ? '18px' : '22px'}"
-      >{initials || '?'}</div>
-    {/if}
+    <img src={resolvedAvatar} alt={commonName} class="w-full h-full object-cover" />
   </div>
 
   <!-- Content -->

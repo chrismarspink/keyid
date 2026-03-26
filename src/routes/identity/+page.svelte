@@ -196,7 +196,8 @@
         notAfter: newCertResult.notAfter,
         serialNumber: newCertResult.serialNumber,
         sealedKey,
-        passwordBackup
+        passwordBackup,
+        avatar: identity.avatar || generateIdenticon(identity.commonName + identity.email)
       };
       await saveIdentity(updated);
       identity = updated;

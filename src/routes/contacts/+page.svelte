@@ -4,7 +4,9 @@
   import IDCard from '$components/IDCard.svelte';
   import TrustBadge from '$components/TrustBadge.svelte';
   import { getAllContacts, addContact, type Contact } from '$lib/storage/contacts';
-  import { parseCertificate } from '$lib/crypto/cert';
+  import { parseCertificate, generateSelfSignedCert } from '$lib/crypto/cert';
+  import { generateKeyPair } from '$lib/crypto/keygen';
+  import { generateIdenticon } from '$lib/crypto/identicon';
   import { QRScanner } from '$lib/qr/scanner';
   import { decodeSimpleQR } from '$lib/qr/bcur';
 
@@ -134,6 +136,51 @@
     showScan = false;
     scanning = false;
   }
+
+  let seeding = false;
+  const TEST_FRIENDS = [
+    { commonName: '김민준', email: 'minjun.kim@example.com', organization: 'Seoul Tech', country: 'KR' },
+    { commonName: '이서연', email: 'seoyeon.lee@example.com', organization: 'Naver Corp', country: 'KR' },
+    { commonName: '박지호', email: 'jiho.park@example.com', organization: 'Kakao', country: 'KR' },
+    { commonName: '최수아', email: 'sua.choi@example.com', organization: 'LG Electronics', country: 'KR' },
+    { commonName: '정도윤', email: 'doyun.jung@example.com', organization: 'Samsung SDS', country: 'KR' },
+    { commonName: '강하은', email: 'haeun.kang@example.com', organization: 'SK Telecom', country: 'KR' },
+    { commonName: '윤시우', email: 'siwoo.yoon@example.com', organization: 'Hyundai Motor', country: 'KR' },
+    { commonName: '임나은', email: 'naeun.lim@example.com', organization: 'KT Corp', country: 'KR' },
+    { commonName: '오준서', email: 'junseo.oh@example.com', organization: 'Posco Holdings', country: 'KR' },
+    { commonName: '신지아', email: 'jia.shin@example.com', organization: 'LOTTE Group', country: 'KR' }
+  ];
+
+  async function seedTestContacts() {
+    seeding = true;
+    try {
+      for (const friend of TEST_FRIENDS) {
+        const kp = await generateKeyPair();
+        const cert = await generateSelfSignedCert(kp, friend, 3);
+        const certB64 = btoa(
+          Array.from(new Uint8Array(cert.certDer), (b) => String.fromCharCode(b)).join('')
+        );
+        await addContact({
+          ...friend,
+          certDer: certB64,
+          fingerprint: cert.fingerprint,
+          notBefore: cert.notBefore,
+          notAfter: cert.notAfter,
+          serialNumber: cert.serialNumber,
+          trustLevel: 'known',
+          addedAt: new Date().toISOString(),
+          notes: '테스트 연락처',
+          avatar: generateIdenticon(friend.commonName + friend.email)
+        });
+      }
+      contacts = await getAllContacts();
+      showToast('테스트 친구 10명을 추가했습니다.', 'success');
+    } catch (e) {
+      showToast('시드 실패: ' + String(e), 'error');
+    } finally {
+      seeding = false;
+    }
+  }
 </script>
 
 <svelte:head>
@@ -173,12 +220,19 @@
       <div class="w-8 h-8 rounded-full border-2 border-navy-600 border-t-transparent animate-spin"></div>
     </div>
   {:else if filtered.length === 0}
-    <div class="text-center py-16 text-gray-400">
+    <div class="text-center py-12 text-gray-400">
       <svg class="w-12 h-12 mx-auto mb-3 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
           d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
       </svg>
       {search ? '검색 결과가 없습니다.' : '연락처가 없습니다. 인증서를 가져오세요.'}
+      {#if !search}
+        <div class="mt-4">
+          <button class="btn-secondary text-sm" on:click={seedTestContacts} disabled={seeding}>
+            {seeding ? '생성 중…' : '테스트 친구 10명 추가'}
+          </button>
+        </div>
+      {/if}
     </div>
   {:else}
     <div class="space-y-3">
@@ -188,12 +242,12 @@
           class="panel flex items-center gap-3 hover:shadow-md transition-shadow"
         >
           <!-- Avatar -->
-          <div class="w-12 h-12 rounded-full flex-shrink-0 overflow-hidden bg-blue-100 flex items-center justify-center font-bold text-navy-600">
-            {#if contact.avatar}
-              <img src={contact.avatar} alt={contact.commonName} class="w-full h-full object-cover" />
-            {:else}
-              {contact.commonName.split(/\s+/).map(w => w[0] ?? '').slice(0, 2).join('').toUpperCase() || '?'}
-            {/if}
+          <div class="w-12 h-12 rounded-full flex-shrink-0 overflow-hidden">
+            <img
+              src={contact.avatar || generateIdenticon(contact.commonName + contact.email)}
+              alt={contact.commonName}
+              class="w-full h-full object-cover"
+            />
           </div>
           <!-- Info -->
           <div class="flex-1 min-w-0">

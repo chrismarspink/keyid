@@ -145,9 +145,93 @@ Docker Desktop 스타일 테이블 UI (`/files`):
 
 ## 배포
 
-Cloudflare Pages 정적 배포:
+### GitHub Pages
 
 ```bash
-npm run build
-# dist/ 폴더를 Cloudflare Pages에 업로드
+npm run deploy
+# NODE_ENV=production 빌드 → gh-pages 브랜치에 배포
 ```
+
+URL: https://chrismarspink.github.io/keyid/
+
+### 로컬 개발
+
+```bash
+npm run dev          # localhost:5173
+npm run dev:mobile   # ngrok 병행 (Android 테스트)
+```
+
+---
+
+## v0.1 주요 기능
+
+### 신원 관리
+- **신원 생성**: ECDSA P-256 키 쌍 + X.509 v3 자체 서명 인증서
+- **사진/아이콘**: 사용자 사진 업로드 또는 자동 생성 Identicon (FNV-1a 해시 기반 5×5 SVG)
+- **갱신**: 동일 키로 유효기간 연장 또는 새 키로 재발급 (1/2/3년 선택)
+- **아카이브**: 갱신 시 기존 인증서는 `expired_identities` 에 보존 (서명에 재사용 가능)
+- **QR/PNG 공유**: 인증서 QR 코드 + PNG ID 카드 다운로드
+
+### 키 보호
+- **WebAuthn PRF**: 생체 인증(지문/Face ID) — 지원 기기 자동 감지
+- **비밀번호 (PBKDF2)**: PBKDF2 310,000회 반복 → AES-256-GCM
+- **백업 비밀번호**: WebAuthn 선택 시 비밀번호 백업 선택적 등록
+
+### 파일 서명 / 암호화
+- **서명**: CMS SignedData (PKCS#7) — 현재 및 아카이브 신원으로 서명 가능
+- **암호화**: CMS EnvelopedData — 연락처별 ECDH 키 협의
+- **검증**: 서명 파일 + 원본 파일로 서명자 검증
+
+### 연락처
+- **인증서 가져오기**: .pkis-cert 파일 또는 QR 스캔
+- **신뢰 수준**: known / verified
+- **테스트 시드**: "테스트 친구 10명 추가" 버튼 (실제 자체 서명 인증서 생성)
+
+### 설정 (`/settings`)
+- **알고리즘**: ECDSA P-256 (기본값, RSA-2048 준비 중)
+- **기본 유효기간**: 1/2/3/5년
+- **기본 국가 코드**
+- **CA 인증서 등록**: PEM/DER 업로드, IndexedDB 저장
+- **CSR 생성**: 현재 키 또는 새 키로 PKCS#10 CSR 생성 및 다운로드
+
+### 설치 (`/install`)
+- 플랫폼별 PWA 설치 가이드 (Android, iOS, macOS, Windows)
+- 원클릭 설치 버튼 (`beforeinstallprompt`)
+
+---
+
+## 기술 스택
+
+| 항목 | 값 |
+|---|---|
+| 프레임워크 | SvelteKit 2 + TypeScript + Tailwind CSS |
+| 암호화 | PKI.js v3 + asn1js, Web Crypto API |
+| 키 알고리즘 | ECDSA P-256 / SHA-256 |
+| 키 보호 | WebAuthn PRF + PBKDF2/AES-GCM |
+| 저장소 | IndexedDB (keyid-v1, v5) |
+| PWA | vite-plugin-pwa, Workbox |
+| QR | qrcode (생성), jsQR (스캔) |
+| 배포 | GitHub Pages (gh-pages 패키지) |
+
+---
+
+## IndexedDB 스토어 (v5)
+
+| 스토어 | 용도 |
+|---|---|
+| `identity` | 단일 신원 레코드 (키+인증서) |
+| `contacts` | 연락처 인증서 |
+| `files` | 서명/암호화된 파일 기록 |
+| `expired_identities` | 아카이브된 신원 (갱신/폐지) |
+| `ca_certs` | 등록된 CA 인증서 |
+| `settings` | 앱 설정 |
+
+## 파일 형식
+
+| 확장자 | 용도 |
+|--------|------|
+| `.pkis-cert` | X.509 DER 인증서 |
+| `.pkis` | 서명 대상 파일 |
+| `.pkis-sig` | CMS SignedData |
+| `.pkis-req` | 서명 요청 |
+| `.csr` | PKCS#10 인증서 신청서 |

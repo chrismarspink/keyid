@@ -4,12 +4,13 @@
  * DB v2: added index on files.createdAt
  * DB v3: added expired_identities store
  * DB v4: re-run migration to ensure expired_identities exists (v3 may have missed it)
+ * DB v5: added ca_certs store and settings store
  */
 
 import type { SealedKey } from '$lib/crypto/protection';
 
 const DB_NAME = 'keyid-v1';
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 
 export interface IdentityRecord {
   id: 'self'; // singleton
@@ -102,6 +103,14 @@ export function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('expired_identities')) {
         const ei = db.createObjectStore('expired_identities', { keyPath: 'id', autoIncrement: true });
         ei.createIndex('fingerprint', 'fingerprint', { unique: false });
+      }
+      // v5: CA certificates and settings
+      if (!db.objectStoreNames.contains('ca_certs')) {
+        const ca = db.createObjectStore('ca_certs', { keyPath: 'id', autoIncrement: true });
+        ca.createIndex('fingerprint', 'fingerprint', { unique: true });
+      }
+      if (!db.objectStoreNames.contains('settings')) {
+        db.createObjectStore('settings', { keyPath: 'key' });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -260,4 +269,86 @@ export async function deleteExpiredIdentity(id: number): Promise<void> {
   } catch {
     // ignore
   }
+}
+
+// ─── CA Certificates ──────────────────────────────────────────────────────────
+
+export interface CACertRecord {
+  id?: number;
+  /** Display name / Subject CN */
+  name: string;
+  /** DER-encoded certificate, base64 */
+  certDer: string;
+  /** SHA-256 fingerprint */
+  fingerprint: string;
+  /** ISO dates */
+  notBefore: string;
+  notAfter: string;
+  /** PEM for display */
+  pem: string;
+  addedAt: string;
+}
+
+export async function addCACert(record: Omit<CACertRecord, 'id'>): Promise<number> {
+  const db = await openDB();
+  const id = await tx<number>(db, 'ca_certs', 'readwrite', (t) =>
+    t.objectStore('ca_certs').add(record) as IDBRequest<number>
+  );
+  db.close();
+  return id;
+}
+
+export async function getAllCACerts(): Promise<CACertRecord[]> {
+  const db = await openDB();
+  const result = await new Promise<CACertRecord[]>((resolve, reject) => {
+    const t = db.transaction('ca_certs', 'readonly');
+    const req = t.objectStore('ca_certs').getAll();
+    req.onsuccess = () => resolve(req.result ?? []);
+    req.onerror = () => reject(req.error);
+  });
+  db.close();
+  return result;
+}
+
+export async function deleteCACert(id: number): Promise<void> {
+  const db = await openDB();
+  await tx(db, 'ca_certs', 'readwrite', (t) =>
+    t.objectStore('ca_certs').delete(id)
+  );
+  db.close();
+}
+
+// ─── Settings ─────────────────────────────────────────────────────────────────
+
+export interface AppSettings {
+  algorithm: 'ecdsa-p256'; // only P-256 supported currently
+  validityYears: 1 | 2 | 3 | 5;
+  defaultCountry: string;
+}
+
+const DEFAULT_SETTINGS: AppSettings = {
+  algorithm: 'ecdsa-p256',
+  validityYears: 3,
+  defaultCountry: 'KR'
+};
+
+export async function loadSettings(): Promise<AppSettings> {
+  try {
+    const db = await openDB();
+    const result = await tx<{ key: string; value: AppSettings } | undefined>(db, 'settings', 'readonly', (t) =>
+      t.objectStore('settings').get('app')
+    );
+    db.close();
+    return result?.value ?? DEFAULT_SETTINGS;
+  } catch {
+    return DEFAULT_SETTINGS;
+  }
+}
+
+export async function saveSettings(settings: AppSettings): Promise<void> {
+  const db = await openDB();
+  await tx(db, 'settings', 'readwrite', (t) =>
+    t.objectStore('settings').put({ key: 'app', value: settings })
+  );
+  db.close();
 }
