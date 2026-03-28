@@ -5,18 +5,36 @@
 
   let visible = true;
   let fading = false;
+  let ready = false; // true after minimum display time
+
+  function dismiss() {
+    if (!ready || fading) return;
+    fading = true;
+    setTimeout(() => {
+      visible = false;
+      dispatch('done');
+    }, 500);
+  }
 
   onMount(() => {
-    // Hold for 1.8s then fade out over 0.5s
-    const hold = setTimeout(() => {
-      fading = true;
-      const fade = setTimeout(() => {
-        visible = false;
-        dispatch('done');
-      }, 500);
-      return () => clearTimeout(fade);
-    }, 1800);
-    return () => clearTimeout(hold);
+    // Allow dismissal after 0.8s (animation settles)
+    const minTimer = setTimeout(() => { ready = true; }, 800);
+
+    // Auto-dismiss after 30s as fallback
+    const autoTimer = setTimeout(dismiss, 30000);
+
+    const onKey = () => dismiss();
+    const onTouch = () => dismiss();
+
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('pointerdown', onTouch);
+
+    return () => {
+      clearTimeout(minTimer);
+      clearTimeout(autoTimer);
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('pointerdown', onTouch);
+    };
   });
 </script>
 
@@ -149,6 +167,11 @@
       <span style="animation-delay:0.2s"></span>
       <span style="animation-delay:0.4s"></span>
     </div>
+
+    <!-- Dismiss hint — appears after ready -->
+    <p class="splash-hint" class:splash-hint-show={ready}>
+      화면을 탭하거나 아무 키나 누르세요
+    </p>
   </div>
 {/if}
 
@@ -199,5 +222,24 @@
   @keyframes dotPulse {
     0%, 100% { opacity: 0.2; transform: scale(0.8); }
     50%       { opacity: 1;   transform: scale(1.2); }
+  }
+
+  .splash-hint {
+    margin-top: 28px;
+    font-size: 11px;
+    letter-spacing: 1px;
+    color: #4b5563;
+    opacity: 0;
+    transition: opacity 0.6s ease;
+    animation: hintBlink 2.5s 0.8s ease-in-out infinite;
+  }
+
+  .splash-hint-show {
+    opacity: 1;
+  }
+
+  @keyframes hintBlink {
+    0%, 100% { opacity: 0.4; }
+    50%       { opacity: 0.9; }
   }
 </style>
