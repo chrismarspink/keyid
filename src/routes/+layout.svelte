@@ -6,6 +6,9 @@
   import { onMount } from 'svelte';
   import { registerLaunchQueueHandler, storeLaunchedFile } from '$lib/fileHandler';
   import InstallBanner from '$components/InstallBanner.svelte';
+  import SplashScreen from '$components/SplashScreen.svelte';
+
+  let splashDone = false;
 
   type NavItem = { label: string; href: string; icon: string };
 
@@ -149,3 +152,4 @@
 </div>
 
 <InstallBanner />
+<SplashScreen on:done={() => (splashDone = true)} />
