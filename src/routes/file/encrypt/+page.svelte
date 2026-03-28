@@ -4,7 +4,8 @@
   import { base } from '$app/paths';
   import { loadIdentity, saveFileRecord, getAllExpiredIdentities, type IdentityRecord } from '$lib/storage/keystore';
   import { getAllContacts, type Contact } from '$lib/storage/contacts';
-  import { encryptForRecipients, decryptEnveloped } from '$lib/crypto/cms';
+  import { encryptForRecipients, decryptEnveloped, decryptAndInspect, packPkisFile, unpackPkisFile } from '$lib/crypto/cms';
+  import { generateIdenticon } from '$lib/crypto/identicon';
   import { unsealKey } from '$lib/crypto/protection';
   import { downloadFile, retrieveLaunchedFile } from '$lib/fileHandler';
 
@@ -19,6 +20,7 @@
   let dropActive = false;
   let fileInput: HTMLInputElement;
   let tab: 'encrypt' | 'decrypt' = 'encrypt';
+  let encryptMessage = '';
 
   // Decrypt state
   let decryptFile: File | null = null;
@@ -27,6 +29,7 @@
   let decryptError = '';
   let decrypting = false;
   let decryptUsedArchivedKey = false;
+  let decryptSignerInfo: { name: string; signingTime?: string; message?: string; fingerprint?: string; valid?: boolean } | null = null;
 
   // Unlock method
   let unlockMethod: 'biometric' | 'password' = 'biometric';
@@ -97,16 +100,17 @@
       const result = await encryptForRecipients(fileData, recipientCerts);
       const baseName = selectedFile.name.replace(/\.[^.]+$/, '');
       const outName = `${baseName}.pkis`;
-      downloadFile(result.der, outName, 'application/pkis');
+      const packed = packPkisFile('encrypted', result.der, selectedFile.name, selectedFile.type, encryptMessage.trim() || undefined);
+      downloadFile(packed, outName, 'application/pkis');
 
       await saveFileRecord({
         name: outName,
         originalName: selectedFile.name,
         type: 'encrypted',
-        size: result.der.byteLength,
+        size: packed.byteLength,
         createdAt: new Date().toISOString(),
         recipientCount: recipientCerts.length,
-        data: result.der
+        data: packed
       });
 
       done = true;
@@ -132,10 +136,33 @@
       });
 
       const certDer = getCertDer(identity.certDer);
-      const encryptedData = await decryptFile.arrayBuffer();
-      const decrypted = await decryptEnveloped(encryptedData, pkcs8, certDer);
+      let rawData = await decryptFile.arrayBuffer();
 
-      const baseName = decryptFile.name.replace(/\.pkis$/, '');
+      // Check if file is a PKIS container and unwrap
+      let containerMsg: string | undefined;
+      let innerFilename: string | undefined;
+      try {
+        const pkis = unpackPkisFile(rawData);
+        rawData = pkis.payload;
+        containerMsg = pkis.message;
+        innerFilename = pkis.filename;
+      } catch { /* not a container, use raw */ }
+
+      const decrypted = await decryptAndInspect(rawData, pkcs8, certDer);
+      decryptSignerInfo = null;
+
+      if (decrypted.isSigned && decrypted.verifyResult) {
+        const vr = decrypted.verifyResult;
+        decryptSignerInfo = {
+          name: vr.signerCommonName,
+          signingTime: vr.signingTime,
+          message: vr.message || containerMsg,
+          fingerprint: vr.signerFingerprint,
+          valid: vr.valid
+        };
+      }
+
+      const baseName = (innerFilename ?? decryptFile.name).replace(/\.pkis$/, '');
       const blob = new Blob([decrypted.plaintext]);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -169,7 +196,7 @@
   <title>파일 암호화 — KeyID</title>
 </svelte:head>
 
-<div class="max-w-xl mx-auto px-4 pt-6 pb-10">
+<div class="px-4 md:px-6 pt-6 pb-24 w-full">
   <!-- Header -->
   <div class="flex items-center gap-3 mb-6">
     <button on:click={() => goto(base + '/')} class="btn-icon">
@@ -274,6 +301,17 @@
         {#if contacts.length === 0}
           <p class="text-xs text-gray-400 text-center py-3">연락처가 없습니다.</p>
         {/if}
+      </div>
+
+      <!-- Message for recipients -->
+      <div class="panel mb-4">
+        <h2 class="text-sm font-semibold text-gray-700 mb-2">
+          메시지 <span class="font-normal text-xs text-gray-400">(선택)</span>
+        </h2>
+        <textarea class="input w-full resize-none" rows="3"
+          placeholder="수신자에게 전달할 메시지 (파일 용도 설명 등)"
+          maxlength="256" bind:value={encryptMessage}></textarea>
+        <div class="text-right text-xs mt-1 text-gray-400">{encryptMessage.length}/256</div>
       </div>
 
       {#if error}
@@ -393,6 +431,36 @@
       <div class="p-4 bg-green-50 rounded-xl text-sm text-green-700 mb-4 text-center font-semibold">
         복호화 완료 — 파일이 다운로드되었습니다.
       </div>
+
+      {#if decryptSignerInfo}
+        <!-- Signer info from inner SignedData -->
+        <div class="panel mb-4 flex items-start gap-4">
+          <img
+            src={generateIdenticon(decryptSignerInfo.name)}
+            alt={decryptSignerInfo.name}
+            class="w-12 h-12 rounded-full object-cover flex-shrink-0"
+          />
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 mb-1">
+              <span class="font-semibold text-slate-800 text-sm">{decryptSignerInfo.name}</span>
+              {#if decryptSignerInfo.valid}
+                <span class="text-xs text-green-700 bg-green-100 px-2 py-0.5 rounded-full">서명 유효</span>
+              {:else}
+                <span class="text-xs text-red-700 bg-red-100 px-2 py-0.5 rounded-full">서명 무효</span>
+              {/if}
+            </div>
+            {#if decryptSignerInfo.signingTime}
+              <div class="text-xs text-gray-400">{new Date(decryptSignerInfo.signingTime).toLocaleString('ko-KR')}</div>
+            {/if}
+            {#if decryptSignerInfo.message}
+              <div class="mt-2 p-2 bg-blue-50 rounded-lg text-sm text-blue-700 italic">
+                "{decryptSignerInfo.message}"
+              </div>
+            {/if}
+          </div>
+        </div>
+      {/if}
+
       {#if decryptUsedArchivedKey}
         <div class="flex items-center gap-2 p-3 rounded-xl text-sm mb-4"
           style="background:rgba(245,158,11,0.12); border:1px solid rgba(245,158,11,0.3); color:#fbbf24">

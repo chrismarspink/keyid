@@ -154,7 +154,7 @@
           email: identity.email || undefined,
           organization: identity.organization || undefined,
           country: identity.country || undefined
-        }, renewYears);
+        }, renewYears, identity.avatar || generateIdenticon(identity.commonName + identity.email));
       } else {
         // Generate entirely new key pair
         const keyPair = await generateKeyPair();
@@ -164,7 +164,7 @@
           email: identity.email || undefined,
           organization: identity.organization || undefined,
           country: identity.country || undefined
-        });
+        }, undefined, identity.avatar || generateIdenticon(identity.commonName + identity.email));
       }
 
       // Seal the (possibly new) private key

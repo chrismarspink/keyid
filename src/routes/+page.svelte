@@ -147,7 +147,7 @@
           email: form.email.trim(),
           organization: form.organization.trim(),
           country: form.country.trim() || 'KR'
-        });
+        }, undefined, avatarDataUrl || generateIdenticon(form.commonName.trim() + form.email.trim()));
 
       // 3. Export and seal private key
       const pkcs8 = await exportPrivateKeyPkcs8(keyPair.privateKey);

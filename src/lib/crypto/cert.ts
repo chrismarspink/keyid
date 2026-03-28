@@ -29,6 +29,8 @@ const OID_SUBJECT_KEY_IDENTIFIER = '2.5.29.14';
 const OID_CLIENT_AUTH = '1.3.6.1.5.5.7.3.2';
 const OID_EMAIL_PROTECTION = '1.3.6.1.5.5.7.3.4';
 const OID_DOCUMENT_SIGNING = '1.3.6.1.4.1.311.10.3.12';
+const OID_LOGOTYPE = '1.3.6.1.5.5.7.1.12';
+const OID_SHA256 = '2.16.840.1.101.3.4.2.1';
 
 export interface CertSubject {
   commonName: string;
@@ -60,13 +62,109 @@ function buildRDN(oid: string, value: string): pkijs.RelativeDistinguishedNames 
 }
 
 /**
+ * Build RFC 3709 logotype extension for a data: URI image.
+ * Only for small avatars (identicons). Skips if > 100KB.
+ */
+async function buildLogotypeExtension(avatarDataUrl: string): Promise<pkijs.Extension | null> {
+  try {
+    const match = avatarDataUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (!match) return null;
+    const mediaType = match[1];
+    const b64 = match[2];
+    if (b64.length > 131072) return null; // skip if > ~100KB
+
+    // Decode to get raw bytes for hash
+    const binaryStr = atob(b64);
+    const rawBytes = new Uint8Array(binaryStr.length);
+    for (let i = 0; i < binaryStr.length; i++) rawBytes[i] = binaryStr.charCodeAt(i);
+    const hashBuf = await window.crypto.subtle.digest('SHA-256', rawBytes.buffer);
+    const hashBytes = new Uint8Array(hashBuf);
+
+    // BIT STRING for hashValue: prepend 0x00 (unused bits count)
+    const bitStringBytes = new Uint8Array(hashBytes.length + 1);
+    bitStringBytes[0] = 0x00;
+    bitStringBytes.set(hashBytes, 1);
+
+    // Build LogotypeExtn structure using raw asn1js
+    const logotypeExtn = new asn1js.Sequence({
+      value: [
+        // subjectLogo [2] EXPLICIT LogotypeInfo
+        new asn1js.Constructed({
+          idBlock: { tagClass: 3, tagNumber: 2 },
+          value: [
+            // direct [0] EXPLICIT LogotypeData
+            new asn1js.Constructed({
+              idBlock: { tagClass: 3, tagNumber: 0 },
+              value: [
+                new asn1js.Sequence({ // LogotypeData
+                  value: [
+                    // image [0] SEQUENCE OF LogotypeImage
+                    new asn1js.Constructed({
+                      idBlock: { tagClass: 3, tagNumber: 0 },
+                      value: [
+                        new asn1js.Sequence({ // LogotypeImage
+                          value: [
+                            new asn1js.Sequence({ // LogotypeDetails
+                              value: [
+                                new asn1js.IA5String({ value: mediaType }),
+                                new asn1js.Sequence({ // SEQUENCE OF HashAlgAndValue
+                                  value: [
+                                    new asn1js.Sequence({ // HashAlgAndValue
+                                      value: [
+                                        new asn1js.Sequence({ // AlgorithmIdentifier
+                                          value: [new asn1js.ObjectIdentifier({ value: OID_SHA256 })]
+                                        }),
+                                        new asn1js.BitString({ valueHex: bitStringBytes.buffer })
+                                      ]
+                                    })
+                                  ]
+                                }),
+                                new asn1js.Sequence({ // SEQUENCE OF IA5String (URIs)
+                                  value: [new asn1js.IA5String({ value: avatarDataUrl })]
+                                })
+                              ]
+                            }),
+                            // LogotypeImageInfo (fileSize, xSize, ySize)
+                            new asn1js.Sequence({
+                              value: [
+                                new asn1js.Integer({ value: rawBytes.byteLength }),
+                                new asn1js.Integer({ value: 256 }),
+                                new asn1js.Integer({ value: 256 })
+                              ]
+                            })
+                          ]
+                        })
+                      ]
+                    })
+                  ]
+                })
+              ]
+            })
+          ]
+        })
+      ]
+    });
+
+    return new pkijs.Extension({
+      extnID: OID_LOGOTYPE,
+      critical: false,
+      extnValue: logotypeExtn.toBER(false)
+    });
+  } catch (e) {
+    console.warn('Logotype extension build failed:', e);
+    return null;
+  }
+}
+
+/**
  * Generate a self-signed X.509 certificate for the given key pair and subject.
  * Validity defaults to 3 years.
  */
 export async function generateSelfSignedCert(
   keyPair: CryptoKeyPair,
   subject: CertSubject,
-  validityYears = 3
+  validityYears = 3,
+  avatarDataUrl?: string | null
 ): Promise<GeneratedCert> {
   initPkijs();
 
@@ -165,6 +263,12 @@ export async function generateSelfSignedCert(
     })
   );
 
+  // Logotype (RFC 3709) — embed avatar if provided
+  if (avatarDataUrl) {
+    const logoExt = await buildLogotypeExtension(avatarDataUrl);
+    if (logoExt) cert.extensions.push(logoExt);
+  }
+
   // Sign the certificate
   await cert.sign(keyPair.privateKey, 'SHA-256');
 
@@ -262,7 +366,8 @@ export async function renewCertSameKey(
   pkcs8Bytes: ArrayBuffer,
   certDer: ArrayBuffer,
   subject: CertSubject,
-  validityYears = 3
+  validityYears = 3,
+  avatarDataUrl?: string | null
 ): Promise<GeneratedCert> {
   initPkijs();
   const spki = extractSpkiFromCert(certDer);
@@ -280,7 +385,7 @@ export async function renewCertSameKey(
       ['verify']
     )
   ]);
-  return generateSelfSignedCert({ privateKey, publicKey }, subject, validityYears);
+  return generateSelfSignedCert({ privateKey, publicKey }, subject, validityYears, avatarDataUrl);
 }
 
 /** Export cert to PEM format. */

@@ -1,0 +1,25 @@
+# .claudeignore - 토큰 절약용 설정
+node_modules/
+.svelte-kit/
+build/
+dist/
+.git/
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+
+# C/C++ 빌드 아티팩트 (이사님 프로젝트용)
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.a
+*.lib
+out/
+debug/
+release/
+
+# 환경 변수 (보안 및 절약)
+.env
+.env.*
