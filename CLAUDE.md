@@ -51,6 +51,11 @@ GitHub 인증은 `.git/config` remote URL에 토큰이 포함되어 있으므로
 | reqsign | 0x07 | .pkis-reqsign |
 | cosign | 0x08 | .pkis-cosign |
 
+## 상세 문서 (작업 전 참고)
+
+- 전체 아키텍처 & 설계 원칙: `docs/architecture.md`
+- UX / 디자인 시스템: `docs/ux-design.md`
+
 ## 핵심 파일 위치
 
 - CMS 서명/암호화: `src/lib/crypto/cms.ts`
