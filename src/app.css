@@ -35,6 +35,13 @@
     overflow: hidden;
   }
 
+  /* SvelteKit root — must fill viewport so flex children work */
+  #svelte {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+
   html {
     font-family: 'Inter', system-ui, sans-serif;
     -webkit-tap-highlight-color: transparent;
@@ -230,19 +237,23 @@
 
   .mobile-shell {
     width: 100%;
-    height: 100%;
+    /* dvh = dynamic viewport height — shrinks when Android URL bar is visible */
+    height: 100dvh;
+    height: 100%; /* fallback for browsers without dvh */
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    padding-top: var(--safe-top);
+    padding-top: env(safe-area-inset-top, 0px);
   }
 
   .mobile-main {
     flex: 1;
+    min-height: 0; /* needed for flex child to scroll correctly */
     overflow-y: auto;
     overflow-x: hidden;
     -webkit-overflow-scrolling: touch;
-    padding-bottom: calc(64px + var(--safe-bottom));
+    /* Extra 8px ensures content isn't flush against the nav on all Android versions */
+    padding-bottom: calc(64px + max(env(safe-area-inset-bottom, 0px), 8px));
   }
 
   /* ─── ID Card ─────────────────────────────────── */
@@ -340,8 +351,9 @@
     justify-content: space-around;
     background: var(--bg-sidebar);
     border-top: 1px solid var(--border);
-    padding-bottom: var(--safe-bottom);
-    height: calc(60px + var(--safe-bottom));
+    /* safe-area-inset-bottom covers notch/gesture bar; minimum 8px on Android */
+    padding-bottom: max(env(safe-area-inset-bottom, 0px), 8px);
+    height: calc(60px + max(env(safe-area-inset-bottom, 0px), 8px));
   }
 
   .nav-item {
