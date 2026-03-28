@@ -21,6 +21,7 @@ const OID_COMMON_NAME = '2.5.4.3';
 const OID_ORGANIZATION = '2.5.4.10';
 const OID_COUNTRY = '2.5.4.6';
 const OID_EMAIL = '1.2.840.113549.1.9.1';
+const OID_TELEPHONE = '2.5.4.20';
 const OID_SUBJECT_ALT_NAME = '2.5.29.17';
 const OID_BASIC_CONSTRAINTS = '2.5.29.19';
 const OID_KEY_USAGE = '2.5.29.15';
@@ -37,6 +38,7 @@ export interface CertSubject {
   organization?: string;
   country?: string;
   email?: string;
+  phone?: string;
 }
 
 export interface GeneratedCert {
@@ -189,6 +191,7 @@ export async function generateSelfSignedCert(
   if (subject.organization) rdns.push(buildRDN(OID_ORGANIZATION, subject.organization));
   rdns.push(buildRDN(OID_COMMON_NAME, subject.commonName));
   if (subject.email) rdns.push(buildRDN(OID_EMAIL, subject.email));
+  if (subject.phone) rdns.push(buildRDN(OID_TELEPHONE, subject.phone));
 
   cert.subject.typesAndValues = rdns.flatMap((r) => r.typesAndValues);
   cert.issuer.typesAndValues = cert.subject.typesAndValues; // self-signed
@@ -233,16 +236,16 @@ export async function generateSelfSignedCert(
     })
   );
 
-  // SubjectAltName (email if provided)
+  // SubjectAltName (email and/or phone)
+  const sanNames: pkijs.GeneralName[] = [];
   if (subject.email) {
-    const san = new pkijs.GeneralNames({
-      names: [
-        new pkijs.GeneralName({
-          type: 1, // rfc822Name
-          value: subject.email
-        })
-      ]
-    });
+    sanNames.push(new pkijs.GeneralName({ type: 1, value: subject.email })); // rfc822Name
+  }
+  if (subject.phone) {
+    sanNames.push(new pkijs.GeneralName({ type: 6, value: `tel:${subject.phone}` })); // uniformResourceIdentifier
+  }
+  if (sanNames.length > 0) {
+    const san = new pkijs.GeneralNames({ names: sanNames });
     cert.extensions.push(
       new pkijs.Extension({
         extnID: OID_SUBJECT_ALT_NAME,
@@ -302,6 +305,7 @@ export interface ParsedCert {
   organization: string;
   email: string;
   country: string;
+  phone: string;
   notBefore: string;
   notAfter: string;
   serialNumber: string;
@@ -338,6 +342,7 @@ export async function parseCertificate(certDer: ArrayBuffer): Promise<ParsedCert
     organization: getRDNValue(rdns, OID_ORGANIZATION),
     email: getRDNValue(rdns, OID_EMAIL),
     country: getRDNValue(rdns, OID_COUNTRY),
+    phone: getRDNValue(rdns, OID_TELEPHONE),
     notBefore: notBefore instanceof Date ? notBefore.toISOString() : String(notBefore),
     notAfter: notAfter instanceof Date ? notAfter.toISOString() : String(notAfter),
     serialNumber: serialHex,

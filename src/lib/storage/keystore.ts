@@ -5,12 +5,13 @@
  * DB v3: added expired_identities store
  * DB v4: re-run migration to ensure expired_identities exists (v3 may have missed it)
  * DB v5: added ca_certs store and settings store
+ * DB v6: added phone field to identity, added approval_chains store
  */
 
 import type { SealedKey } from '$lib/crypto/protection';
 
 const DB_NAME = 'keyid-v1';
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 
 export interface IdentityRecord {
   id: 'self'; // singleton
@@ -18,6 +19,7 @@ export interface IdentityRecord {
   email: string;
   organization: string;
   country: string;
+  phone?: string;
   /** DER-encoded X.509 certificate as base64 */
   certDer: string;
   /** Fingerprint SHA-256 with colons, uppercase */
@@ -42,6 +44,7 @@ export interface ExpiredIdentityRecord {
   email: string;
   organization: string;
   country: string;
+  phone?: string;
   /** DER-encoded X.509 certificate as base64 */
   certDer: string;
   /** Fingerprint SHA-256 with colons, uppercase */
@@ -111,6 +114,10 @@ export function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains('settings')) {
         db.createObjectStore('settings', { keyPath: 'key' });
+      }
+      // v6: approval chains (결제 라인)
+      if (!db.objectStoreNames.contains('approval_chains')) {
+        db.createObjectStore('approval_chains', { keyPath: 'id', autoIncrement: true });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -349,6 +356,65 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
   const db = await openDB();
   await tx(db, 'settings', 'readwrite', (t) =>
     t.objectStore('settings').put({ key: 'app', value: settings })
+  );
+  db.close();
+}
+
+// ─── Approval Chains (결제 라인) ───────────────────────────────────────────────
+
+/** One step in an approval chain */
+export interface ApprovalStep {
+  /** Contact ID from contacts store */
+  contactId: number;
+  /** Display name (denormalized for quick display) */
+  name: string;
+  /** Certificate fingerprint */
+  fingerprint: string;
+}
+
+/** An ordered sequence of signers for sequential approval (결제 라인) */
+export interface ApprovalChain {
+  id?: number;
+  /** Human-readable name for this chain */
+  name: string;
+  /** Ordered list of approvers */
+  steps: ApprovalStep[];
+  createdAt: string;
+}
+
+export async function saveApprovalChain(chain: Omit<ApprovalChain, 'id'>): Promise<number> {
+  const db = await openDB();
+  const id = await tx<number>(db, 'approval_chains', 'readwrite', (t) =>
+    t.objectStore('approval_chains').add(chain) as IDBRequest<number>
+  );
+  db.close();
+  return id;
+}
+
+export async function updateApprovalChain(chain: ApprovalChain): Promise<void> {
+  const db = await openDB();
+  await tx(db, 'approval_chains', 'readwrite', (t) =>
+    t.objectStore('approval_chains').put(chain)
+  );
+  db.close();
+}
+
+export async function getAllApprovalChains(): Promise<ApprovalChain[]> {
+  const db = await openDB();
+  const result = await new Promise<ApprovalChain[]>((resolve, reject) => {
+    const t = db.transaction('approval_chains', 'readonly');
+    const req = t.objectStore('approval_chains').getAll();
+    req.onsuccess = () => resolve(req.result ?? []);
+    req.onerror = () => reject(req.error);
+  });
+  db.close();
+  return result;
+}
+
+export async function deleteApprovalChain(id: number): Promise<void> {
+  const db = await openDB();
+  await tx(db, 'approval_chains', 'readwrite', (t) =>
+    t.objectStore('approval_chains').delete(id)
   );
   db.close();
 }

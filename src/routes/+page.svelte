@@ -24,6 +24,7 @@
   let form = {
     commonName: '',
     email: '',
+    phone: '',
     organization: '',
     country: 'KR'
   };
@@ -145,6 +146,7 @@
         await generateSelfSignedCert(keyPair, {
           commonName: form.commonName.trim(),
           email: form.email.trim(),
+          phone: form.phone.trim() || undefined,
           organization: form.organization.trim(),
           country: form.country.trim() || 'KR'
         }, undefined, avatarDataUrl || generateIdenticon(form.commonName.trim() + form.email.trim()));
@@ -173,6 +175,7 @@
         id: 'self',
         commonName: form.commonName.trim(),
         email: form.email.trim(),
+        phone: form.phone.trim() || undefined,
         organization: form.organization.trim(),
         country: form.country.trim() || 'KR',
         certDer: certB64,
@@ -393,6 +396,16 @@
             type="email"
             placeholder="hong@example.com"
             bind:value={form.email}
+          />
+        </div>
+        <div>
+          <label class="label" for="phone">전화번호</label>
+          <input
+            id="phone"
+            class="input"
+            type="tel"
+            placeholder="+821012345678"
+            bind:value={form.phone}
           />
         </div>
         <div>

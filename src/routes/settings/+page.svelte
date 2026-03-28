@@ -3,9 +3,12 @@
   import { base } from '$app/paths';
   import {
     loadSettings, saveSettings, type AppSettings,
-    getAllCACerts, addCACert, deleteCACert, type CACertRecord
+    getAllCACerts, addCACert, deleteCACert, type CACertRecord,
+    getAllApprovalChains, saveApprovalChain, updateApprovalChain, deleteApprovalChain,
+    type ApprovalChain, type ApprovalStep
   } from '$lib/storage/keystore';
   import { loadIdentity, type IdentityRecord } from '$lib/storage/keystore';
+  import { getAllContacts, type Contact } from '$lib/storage/contacts';
   import { parseCertificate, certDerToPem } from '$lib/crypto/cert';
   import { generateCSR } from '$lib/crypto/csr';
   import { generateKeyPair, exportPrivateKeyPkcs8 } from '$lib/crypto/keygen';
@@ -14,7 +17,16 @@
   let settings: AppSettings = { algorithm: 'ecdsa-p256', validityYears: 3, defaultCountry: 'KR' };
   let caCerts: CACertRecord[] = [];
   let identity: IdentityRecord | null = null;
+  let contacts: Contact[] = [];
   let loading = true;
+
+  // Approval chains (결제 라인)
+  let approvalChains: ApprovalChain[] = [];
+  let showChainEditor = false;
+  let editingChain: ApprovalChain | null = null;
+  let chainName = '';
+  let chainSteps: ApprovalStep[] = [];
+  let chainError = '';
 
   // CA cert upload
   let caFileInput: HTMLInputElement;
@@ -37,10 +49,12 @@
   }
 
   onMount(async () => {
-    [settings, caCerts, identity] = await Promise.all([
+    [settings, caCerts, identity, approvalChains, contacts] = await Promise.all([
       loadSettings(),
       getAllCACerts(),
-      loadIdentity()
+      loadIdentity(),
+      getAllApprovalChains(),
+      getAllContacts()
     ]);
     loading = false;
   });
@@ -189,6 +203,63 @@
     const file = input.files?.[0];
     if (file) importCACert(file);
     input.value = '';
+  }
+
+  // ─── Approval chain editor ────────────────────────────────────────────────
+
+  function openNewChain() {
+    editingChain = null;
+    chainName = '';
+    chainSteps = [];
+    chainError = '';
+    showChainEditor = true;
+  }
+
+  function openEditChain(chain: ApprovalChain) {
+    editingChain = chain;
+    chainName = chain.name;
+    chainSteps = [...chain.steps];
+    chainError = '';
+    showChainEditor = true;
+  }
+
+  function addChainStep(contactId: number) {
+    const c = contacts.find(x => x.id === contactId);
+    if (!c || !c.id) return;
+    if (chainSteps.some(s => s.contactId === contactId)) return; // no duplicates
+    chainSteps = [...chainSteps, { contactId: c.id, name: c.commonName, fingerprint: c.fingerprint }];
+  }
+
+  function removeChainStep(idx: number) {
+    chainSteps = chainSteps.filter((_, i) => i !== idx);
+  }
+
+  function moveStep(idx: number, dir: -1 | 1) {
+    const newIdx = idx + dir;
+    if (newIdx < 0 || newIdx >= chainSteps.length) return;
+    const arr = [...chainSteps];
+    [arr[idx], arr[newIdx]] = [arr[newIdx], arr[idx]];
+    chainSteps = arr;
+  }
+
+  async function saveChain() {
+    if (!chainName.trim()) { chainError = '이름을 입력하세요.'; return; }
+    if (chainSteps.length < 2) { chainError = '결제자를 2명 이상 추가하세요.'; return; }
+    const record = { name: chainName.trim(), steps: chainSteps, createdAt: new Date().toISOString() };
+    if (editingChain?.id != null) {
+      await updateApprovalChain({ ...record, id: editingChain.id });
+    } else {
+      await saveApprovalChain(record);
+    }
+    approvalChains = await getAllApprovalChains();
+    showChainEditor = false;
+    showToast('결제 라인이 저장되었습니다.', 'success');
+  }
+
+  async function removeChain(id: number) {
+    await deleteApprovalChain(id);
+    approvalChains = await getAllApprovalChains();
+    showToast('결제 라인이 삭제되었습니다.', 'info');
   }
 </script>
 
@@ -422,6 +493,58 @@
     {/if}
   </section>
 
+  <!-- ── Approval Chains (결제 라인) ──────────────────────────────────── -->
+  <section class="panel mb-4">
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <h2 class="font-semibold text-slate-700">결제 라인</h2>
+        <p class="text-xs text-gray-400 mt-0.5">순서 지정 다중 서명 (결재/승인 체인)</p>
+      </div>
+      <button class="btn-primary text-sm py-2" on:click={openNewChain} disabled={contacts.length === 0}>
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+        </svg>
+        추가
+      </button>
+    </div>
+
+    {#if contacts.length === 0}
+      <p class="text-xs text-center text-gray-400 py-4">
+        결제 라인을 만들려면 먼저 연락처를 추가하세요.
+      </p>
+    {:else if approvalChains.length === 0}
+      <p class="text-xs text-center text-gray-400 py-4">등록된 결제 라인이 없습니다.</p>
+    {:else}
+      <div class="space-y-2">
+        {#each approvalChains as chain}
+          <div class="p-3 rounded-xl" style="background:rgba(0,0,0,0.15); border:1px solid var(--border)">
+            <div class="flex items-center justify-between mb-2">
+              <span class="font-semibold text-sm" style="color:var(--text)">{chain.name}</span>
+              <div class="flex gap-2">
+                <button class="text-xs px-2 py-1 rounded-lg" style="color:#60a5fa; background:rgba(59,130,246,0.1)"
+                  on:click={() => openEditChain(chain)}>편집</button>
+                <button class="text-xs px-2 py-1 rounded-lg" style="color:#f87171; background:rgba(239,68,68,0.1)"
+                  on:click={() => chain.id != null && removeChain(chain.id)}>삭제</button>
+              </div>
+            </div>
+            <div class="flex flex-wrap items-center gap-1">
+              {#each chain.steps as step, i}
+                <span class="text-xs px-2 py-0.5 rounded-full" style="background:rgba(29,110,245,0.15); color:#93c5fd">
+                  {i + 1}. {step.name}
+                </span>
+                {#if i < chain.steps.length - 1}
+                  <svg class="w-3 h-3 flex-shrink-0" style="color:var(--text-dim)" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                  </svg>
+                {/if}
+              {/each}
+            </div>
+          </div>
+        {/each}
+      </div>
+    {/if}
+  </section>
+
   <!-- ── App Info ────────────────────────────────────────────────── -->
   <section class="panel">
     <h2 class="font-semibold text-slate-700 mb-3">앱 정보</h2>
@@ -435,6 +558,84 @@
 
   {/if}
 </div>
+
+<!-- ── Approval Chain Editor Modal ─────────────────────────────── -->
+{#if showChainEditor}
+  <div class="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" role="dialog">
+    <div class="rounded-2xl p-6 w-full max-w-sm" style="background:var(--bg-panel); border:1px solid var(--border-mid)">
+      <h3 class="font-bold text-lg mb-4" style="color:var(--text)">
+        {editingChain ? '결제 라인 편집' : '결제 라인 추가'}
+      </h3>
+
+      <div class="space-y-4">
+        <div>
+          <label class="text-sm mb-1 block" style="color:var(--text-muted)">라인 이름</label>
+          <input class="input" placeholder="예: 구매 결재 라인" bind:value={chainName} />
+        </div>
+
+        <!-- Step list -->
+        {#if chainSteps.length > 0}
+          <div class="space-y-1">
+            <p class="text-xs mb-2" style="color:var(--text-muted)">결재 순서 (위→아래)</p>
+            {#each chainSteps as step, i}
+              <div class="flex items-center gap-2 p-2 rounded-lg" style="background:rgba(0,0,0,0.2)">
+                <span class="text-xs w-5 text-center font-bold" style="color:#60a5fa">{i + 1}</span>
+                <span class="flex-1 text-sm truncate" style="color:var(--text)">{step.name}</span>
+                <button class="text-gray-500 hover:text-blue-400" on:click={() => moveStep(i, -1)} disabled={i === 0}>
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/>
+                  </svg>
+                </button>
+                <button class="text-gray-500 hover:text-blue-400" on:click={() => moveStep(i, 1)} disabled={i === chainSteps.length - 1}>
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                  </svg>
+                </button>
+                <button class="text-gray-500 hover:text-red-400" on:click={() => removeChainStep(i)}>
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                  </svg>
+                </button>
+              </div>
+            {/each}
+          </div>
+        {/if}
+
+        <!-- Add contact -->
+        <div>
+          <p class="text-xs mb-1.5" style="color:var(--text-muted)">결재자 추가 (연락처에서 선택)</p>
+          <div class="space-y-1 max-h-40 overflow-y-auto">
+            {#each contacts.filter(c => !chainSteps.some(s => s.contactId === c.id)) as c}
+              <button
+                class="w-full flex items-center gap-2 p-2 rounded-lg text-left transition"
+                style="background:rgba(0,0,0,0.2)"
+                on:click={() => c.id != null && addChainStep(c.id)}
+              >
+                <span class="text-sm flex-1 truncate" style="color:var(--text)">{c.commonName}</span>
+                <span class="text-xs" style="color:var(--text-muted)">{c.email}</span>
+                <svg class="w-4 h-4 flex-shrink-0" style="color:#60a5fa" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                </svg>
+              </button>
+            {/each}
+            {#if contacts.filter(c => !chainSteps.some(s => s.contactId === c.id)).length === 0}
+              <p class="text-xs text-center py-2" style="color:var(--text-dim)">모든 연락처가 추가됨</p>
+            {/if}
+          </div>
+        </div>
+
+        {#if chainError}
+          <p class="text-sm" style="color:#f87171">{chainError}</p>
+        {/if}
+
+        <div class="flex gap-3 pt-1">
+          <button class="btn-secondary flex-1" on:click={() => (showChainEditor = false)}>취소</button>
+          <button class="btn-primary flex-1" on:click={saveChain}>저장</button>
+        </div>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <!-- Toast -->
 {#if toast.visible}

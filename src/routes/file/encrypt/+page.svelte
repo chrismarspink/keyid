@@ -4,7 +4,7 @@
   import { base } from '$app/paths';
   import { loadIdentity, saveFileRecord, getAllExpiredIdentities, type IdentityRecord } from '$lib/storage/keystore';
   import { getAllContacts, type Contact } from '$lib/storage/contacts';
-  import { encryptForRecipients, decryptEnveloped, decryptAndInspect, packPkisFile, unpackPkisFile } from '$lib/crypto/cms';
+  import { encryptForRecipients, decryptEnveloped, decryptAndInspect, packPkisFile, unpackPkisFile, compressData, decompressData } from '$lib/crypto/cms';
   import { generateIdenticon } from '$lib/crypto/identicon';
   import { unsealKey } from '$lib/crypto/protection';
   import { downloadFile, retrieveLaunchedFile } from '$lib/fileHandler';
@@ -21,6 +21,7 @@
   let fileInput: HTMLInputElement;
   let tab: 'encrypt' | 'decrypt' = 'encrypt';
   let encryptMessage = '';
+  let compressBeforeEncrypt = true;
 
   // Decrypt state
   let decryptFile: File | null = null;
@@ -96,7 +97,10 @@
         return;
       }
 
-      const fileData = await selectedFile.arrayBuffer();
+      let fileData = await selectedFile.arrayBuffer();
+      if (compressBeforeEncrypt) {
+        fileData = await compressData(fileData);
+      }
       const result = await encryptForRecipients(fileData, recipientCerts);
       const baseName = selectedFile.name.replace(/\.[^.]+$/, '');
       const outName = `${baseName}.pkis`;
@@ -162,8 +166,12 @@
         };
       }
 
+      // Try decompression (files encrypted with compression option)
+      let finalData = decrypted.plaintext;
+      try { finalData = await decompressData(decrypted.plaintext); } catch { /* not compressed */ }
+
       const baseName = (innerFilename ?? decryptFile.name).replace(/\.pkis$/, '');
-      const blob = new Blob([decrypted.plaintext]);
+      const blob = new Blob([finalData]);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -312,6 +320,17 @@
           placeholder="수신자에게 전달할 메시지 (파일 용도 설명 등)"
           maxlength="256" bind:value={encryptMessage}></textarea>
         <div class="text-right text-xs mt-1 text-gray-400">{encryptMessage.length}/256</div>
+      </div>
+
+      <!-- Compression option -->
+      <div class="panel mb-4">
+        <label class="flex items-center gap-3 cursor-pointer">
+          <input type="checkbox" bind:checked={compressBeforeEncrypt} class="w-4 h-4 accent-navy-600" />
+          <div>
+            <div class="text-sm font-semibold text-gray-700">암호화 전 압축</div>
+            <div class="text-xs text-gray-400 mt-0.5">파일 크기를 줄인 후 암호화합니다 (권장)</div>
+          </div>
+        </label>
       </div>
 
       {#if error}

@@ -152,6 +152,7 @@
         newCertResult = await renewCertSameKey(pkcs8, currentCertDer, {
           commonName: identity.commonName,
           email: identity.email || undefined,
+          phone: identity.phone || undefined,
           organization: identity.organization || undefined,
           country: identity.country || undefined
         }, renewYears, identity.avatar || generateIdenticon(identity.commonName + identity.email));
@@ -162,6 +163,7 @@
         newCertResult = await generateSelfSignedCert(keyPair, {
           commonName: identity.commonName,
           email: identity.email || undefined,
+          phone: identity.phone || undefined,
           organization: identity.organization || undefined,
           country: identity.country || undefined
         }, undefined, identity.avatar || generateIdenticon(identity.commonName + identity.email));
@@ -380,6 +382,12 @@
           <div class="flex gap-3">
             <dt class="w-24 text-gray-400 flex-shrink-0">이메일</dt>
             <dd class="text-slate-700">{identity.email}</dd>
+          </div>
+        {/if}
+        {#if identity.phone}
+          <div class="flex gap-3">
+            <dt class="w-24 text-gray-400 flex-shrink-0">전화번호</dt>
+            <dd class="text-slate-700">{identity.phone}</dd>
           </div>
         {/if}
         {#if identity.organization}

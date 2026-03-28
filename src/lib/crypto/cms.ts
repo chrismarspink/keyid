@@ -757,6 +757,53 @@ export async function signDataEmbedded(
   };
 }
 
+// ─── Compression ─────────────────────────────────────────────────────────────
+
+/**
+ * Compress data using the CompressionStream (deflate-raw) API.
+ * Architecture requires: [압축 → 서명 → 암호화] order.
+ */
+export async function compressData(data: ArrayBuffer): Promise<ArrayBuffer> {
+  const cs = new CompressionStream('deflate-raw');
+  const writer = cs.writable.getWriter();
+  writer.write(data);
+  writer.close();
+  const chunks: Uint8Array[] = [];
+  const reader = cs.readable.getReader();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+  }
+  const total = chunks.reduce((n, c) => n + c.length, 0);
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.length; }
+  return result.buffer;
+}
+
+/**
+ * Decompress data using the DecompressionStream (deflate-raw) API.
+ */
+export async function decompressData(data: ArrayBuffer): Promise<ArrayBuffer> {
+  const ds = new DecompressionStream('deflate-raw');
+  const writer = ds.writable.getWriter();
+  writer.write(data);
+  writer.close();
+  const chunks: Uint8Array[] = [];
+  const reader = ds.readable.getReader();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+  }
+  const total = chunks.reduce((n, c) => n + c.length, 0);
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.length; }
+  return result.buffer;
+}
+
 /** Unpack a .pkis file container. Throws if magic bytes don't match. */
 export function unpackPkisFile(raw: ArrayBuffer): PkisFile {
   const bytes = new Uint8Array(raw);
