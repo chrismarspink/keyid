@@ -44,6 +44,12 @@ export interface VerifyResult {
   signerFingerprint?: string;
   message?: string;
   error?: string;
+  /**
+   * true  = original file provided and its SHA-256 matches the stored messageDigest
+   * false = original file provided but hash does NOT match (tampered)
+   * undefined = original file was not provided; content integrity not checked
+   */
+  contentIntegrityVerified?: boolean;
 }
 
 // ─── Sign ──────────────────────────────────────────────────────────────────
@@ -167,11 +173,43 @@ export async function signData(
 // ─── Verify ────────────────────────────────────────────────────────────────
 
 /**
- * Verify a CMS SignedData. Checks signature and digest against the original file.
+ * Convert DER-encoded ECDSA signature (SEQUENCE { r INTEGER, s INTEGER })
+ * to the raw 64-byte format (r‖s, 32 bytes each) expected by Web Crypto.
+ */
+function derEcdsaToRaw(der: Uint8Array): Uint8Array {
+  let pos = 0;
+  if (der[pos++] !== 0x30) throw new Error('Expected SEQUENCE');
+  // Length (possibly multi-byte)
+  let seqLen = der[pos++];
+  if (seqLen & 0x80) pos += seqLen & 0x7f;
+
+  const readInt = (): Uint8Array => {
+    if (der[pos++] !== 0x02) throw new Error('Expected INTEGER');
+    let len = der[pos++];
+    // Strip leading zero padding
+    while (len > 32 && der[pos] === 0x00) { pos++; len--; }
+    const val = der.slice(pos, pos + len);
+    pos += len;
+    return val;
+  };
+
+  const r = readInt();
+  const s = readInt();
+  const raw = new Uint8Array(64);
+  raw.set(r, 32 - r.length);
+  raw.set(s, 64 - s.length);
+  return raw;
+}
+
+/**
+ * Verify a CMS SignedData.
+ * - originalFile is optional.
+ *   - Without it: verifies only the ECDSA signature over signedAttrs (who signed).
+ *   - With it: also checks the file hash matches messageDigest (content integrity).
  */
 export async function verifySignature(
   cmsSignedDer: ArrayBuffer,
-  originalFile: ArrayBuffer
+  originalFile?: ArrayBuffer
 ): Promise<VerifyResult> {
   initPkijs();
   try {
@@ -179,78 +217,94 @@ export async function verifySignature(
     const contentInfo = new pkijs.ContentInfo({ schema: schema.result });
     const cmsSignedData = new pkijs.SignedData({ schema: contentInfo.content });
 
-    // Get signer cert
+    // ── Signer certificate (embedded in SignedData) ──────────────────────
     const certs = cmsSignedData.certificates as pkijs.Certificate[];
     if (!certs || certs.length === 0) {
-      return { valid: false, signerCommonName: 'Unknown', contentDigest: '', error: '인증서 없음' };
+      return { valid: false, signerCommonName: 'Unknown', contentDigest: '', error: '서명 파일에 인증서가 없습니다' };
     }
     const signerCert = certs[0];
     const cn =
-      signerCert.subject.typesAndValues.find((r) => r.type === '2.5.4.3')?.value?.valueBlock
-        ?.value ?? 'Unknown';
+      signerCert.subject.typesAndValues.find((r) => r.type === '2.5.4.3')?.value?.valueBlock?.value ?? 'Unknown';
 
-    // Compute fingerprint of signer cert
+    // Fingerprint of signer cert
     const signerCertDer = signerCert.toSchema(true).toBER(false);
     const fpHash = await crypto.subtle.digest('SHA-256', signerCertDer);
     const signerFingerprint = Array.from(new Uint8Array(fpHash))
       .map((b) => b.toString(16).padStart(2, '0'))
-      .join(':')
-      .toUpperCase();
-
-    // Compute digest of original file
-    const fileDigest = await crypto.subtle.digest('SHA-256', originalFile);
-    const contentDigest = Array.from(new Uint8Array(fileDigest))
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join('');
-
-    // Verify using PKI.js built-in
-    const verifyResult = await cmsSignedData.verify({
-      signer: 0,
-      data: originalFile,
-      checkChain: false,
-      extendedMode: true
-    });
+      .join(':').toUpperCase();
 
     const signerInfo = cmsSignedData.signerInfos[0];
+
+    // ── Signing time ─────────────────────────────────────────────────────
     let signingTime: string | undefined;
     const timeAttr = signerInfo.signedAttrs?.attributes?.find((a) => a.type === OID_SIGNING_TIME);
     if (timeAttr?.values?.[0]) {
-      try {
-        const t = timeAttr.values[0];
-        signingTime = (t as asn1js.UTCTime).toDate?.()?.toISOString();
-      } catch {
-        // ignore
-      }
+      try { signingTime = (timeAttr.values[0] as asn1js.UTCTime).toDate?.()?.toISOString(); } catch { /* ignore */ }
     }
 
-    // Extract contentHint message
+    // ── ContentHint message ───────────────────────────────────────────────
     let message: string | undefined;
     const hintAttr = signerInfo.signedAttrs?.attributes?.find((a) => a.type === OID_CONTENT_HINT);
     if (hintAttr?.values?.[0]) {
       try {
         const seq = hintAttr.values[0] as asn1js.Sequence;
         const first = (seq.valueBlock?.value as asn1js.BaseBlock[])?.[0];
-        if (first instanceof asn1js.Utf8String) {
-          message = (first as asn1js.Utf8String).valueBlock.value;
-        }
+        if (first instanceof asn1js.Utf8String) message = (first as asn1js.Utf8String).valueBlock.value;
       } catch { /* ignore */ }
     }
 
+    // ── Stored messageDigest (from signedAttrs) ────────────────────────────
+    let storedDigestHex = '';
+    const digestAttr = signerInfo.signedAttrs?.attributes?.find((a) => a.type === OID_MESSAGE_DIGEST);
+    if (digestAttr?.values?.[0]) {
+      try {
+        const oct = digestAttr.values[0] as asn1js.OctetString;
+        storedDigestHex = Array.from(new Uint8Array(oct.valueBlock.valueHex as ArrayBuffer))
+          .map(b => b.toString(16).padStart(2, '0')).join('');
+      } catch { /* ignore */ }
+    }
+
+    // ── ECDSA signature verification over signedAttrs ────────────────────
+    // The signature is over SET-encoded signedAttrs (tag 0x31).
+    let signatureValid = false;
+    try {
+      const spkiDer = signerCert.subjectPublicKeyInfo.toSchema().toBER(false);
+      const pubKey = await crypto.subtle.importKey(
+        'spki', spkiDer,
+        { name: 'ECDSA', namedCurve: 'P-256' },
+        false, ['verify']
+      );
+      const signedAttrsDer = new Uint8Array(signerInfo.signedAttrs!.toSchema().toBER(false));
+      signedAttrsDer[0] = 0x31; // SET OF tag (pkijs uses context-specific 0xa0 internally)
+      const rawSig = derEcdsaToRaw(new Uint8Array(signerInfo.signature.valueBlock.valueHex as ArrayBuffer));
+      signatureValid = await crypto.subtle.verify(
+        { name: 'ECDSA', hash: 'SHA-256' }, pubKey, rawSig, signedAttrsDer
+      );
+    } catch { signatureValid = false; }
+
+    // ── Content integrity (only if original file provided) ────────────────
+    let contentIntegrityVerified: boolean | undefined;
+    let contentDigest = storedDigestHex; // default to stored digest for display
+
+    if (originalFile !== undefined) {
+      const fileDigestBuf = await crypto.subtle.digest('SHA-256', originalFile);
+      const fileDigestHex = Array.from(new Uint8Array(fileDigestBuf))
+        .map(b => b.toString(16).padStart(2, '0')).join('');
+      contentDigest = fileDigestHex;
+      contentIntegrityVerified = (fileDigestHex === storedDigestHex) && storedDigestHex !== '';
+    }
+
     return {
-      valid: (verifyResult as { signatureVerified?: boolean })?.signatureVerified ?? false,
+      valid: signatureValid,
       signerCommonName: cn,
       signingTime,
       contentDigest,
       signerFingerprint,
-      message
+      message,
+      contentIntegrityVerified
     };
   } catch (e) {
-    return {
-      valid: false,
-      signerCommonName: 'Unknown',
-      contentDigest: '',
-      error: String(e)
-    };
+    return { valid: false, signerCommonName: 'Unknown', contentDigest: '', error: String(e) };
   }
 }
 
