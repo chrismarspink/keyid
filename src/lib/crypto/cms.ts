@@ -510,17 +510,21 @@ export async function decryptAndInspect(
 // ─── File format ───────────────────────────────────────────────────────────
 
 export interface PkisFile {
-  type: 'signed' | 'encrypted' | 'cert' | 'request' | 'key' | 'signed-encrypted' | 'reqsign' | 'cosign';
+  type: 'signed' | 'encrypted' | 'cert' | 'request' | 'key' | 'signed-encrypted' | 'reqsign' | 'cosign' | 'gated' | 'approval-req';
   payload: ArrayBuffer;
   /** Original filename if present */
   filename?: string;
   /** MIME type of enclosed content */
   mimeType?: string;
   message?: string;
-  /** For reqsign/cosign: unique request ID (UUID) used as Supabase channel name */
+  /** For reqsign/cosign/approval-req: unique request ID (UUID) */
   requestId?: string;
-  /** For reqsign/cosign: requester's certificate DER encoded as base64 */
+  /** For reqsign/cosign/approval-req: requester's certificate DER as base64 */
   requesterCert?: string;
+  /** For gated/approval-req: approver's certificate fingerprint */
+  approverId?: string;
+  /** For gated/approval-req: approver's display name */
+  approverName?: string;
 }
 
 const MAGIC = new TextEncoder().encode('PKIS');
@@ -532,16 +536,21 @@ export function packPkisFile(
   filename?: string,
   mimeType?: string,
   message?: string,
-  extra?: { requestId?: string; requesterCert?: string }
+  extra?: { requestId?: string; requesterCert?: string; approverId?: string; approverName?: string }
 ): ArrayBuffer {
-  const typeMap = { signed: 0x01, encrypted: 0x02, cert: 0x03, request: 0x04, key: 0x05, 'signed-encrypted': 0x06, reqsign: 0x07, cosign: 0x08 };
+  const typeMap: Record<PkisFile['type'], number> = {
+    signed: 0x01, encrypted: 0x02, cert: 0x03, request: 0x04, key: 0x05,
+    'signed-encrypted': 0x06, reqsign: 0x07, cosign: 0x08, gated: 0x09, 'approval-req': 0x0A
+  };
   const meta = JSON.stringify({
     t: typeMap[type],
     f: filename ?? '',
     m: mimeType ?? '',
     msg: message ?? '',
     rid: extra?.requestId ?? '',
-    rc: extra?.requesterCert ?? ''
+    rc: extra?.requesterCert ?? '',
+    aid: (extra as { approverId?: string })?.approverId ?? '',
+    an: (extra as { approverName?: string })?.approverName ?? ''
   });
   const metaBytes = new TextEncoder().encode(meta);
   const metaLen = new DataView(new ArrayBuffer(4));
@@ -818,7 +827,8 @@ export function unpackPkisFile(raw: ArrayBuffer): PkisFile {
   const payload = raw.slice(pos);
 
   const typeRev: Record<number, PkisFile['type']> = {
-    0x01: 'signed', 0x02: 'encrypted', 0x03: 'cert', 0x04: 'request', 0x05: 'key', 0x06: 'signed-encrypted', 0x07: 'reqsign', 0x08: 'cosign'
+    0x01: 'signed', 0x02: 'encrypted', 0x03: 'cert', 0x04: 'request', 0x05: 'key',
+    0x06: 'signed-encrypted', 0x07: 'reqsign', 0x08: 'cosign', 0x09: 'gated', 0x0A: 'approval-req'
   };
   return {
     type: typeRev[meta.t] ?? 'signed',
@@ -827,6 +837,8 @@ export function unpackPkisFile(raw: ArrayBuffer): PkisFile {
     mimeType: meta.m || undefined,
     message: meta.msg || undefined,
     requestId: meta.rid || undefined,
-    requesterCert: meta.rc || undefined
+    requesterCert: meta.rc || undefined,
+    approverId: meta.aid || undefined,
+    approverName: meta.an || undefined
   };
 }

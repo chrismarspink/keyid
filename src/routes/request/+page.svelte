@@ -7,6 +7,7 @@
   import { importPrivateKeyPkcs8 } from '$lib/crypto/keygen';
   import { addCountersignature } from '$lib/crypto/countersign';
   import { signData, createCoSignerInfo, unpackPkisFile, packPkisFile } from '$lib/crypto/cms';
+  import { processApproval } from '$lib/crypto/approval';
   import { downloadFile, retrieveLaunchedFile } from '$lib/fileHandler';
   import { supabase } from '$lib/supabase';
 
@@ -24,12 +25,14 @@
   }
 
   // Parsed request info
-  let fileType: 'pkis-req' | 'pkis-reqsign' | 'pkis-cosign' | null = null;
+  let fileType: 'pkis-req' | 'pkis-reqsign' | 'pkis-cosign' | 'approval-req' | null = null;
   let reqMeta: { requesterName?: string; purpose?: string; callbackUrl?: string } = {};
   // For reqsign type
   let reqsignInfo: { filename?: string; message?: string; requestId?: string; requesterName?: string } = {};
   // For cosign type
   let cosignInfo: { filename?: string; message?: string; requestId?: string; requesterName?: string } = {};
+  // For approval-req type
+  let approvalInfo: { requestId?: string; requesterName?: string; requesterCert?: string; approverName?: string; payload?: ArrayBuffer } = {};
 
   function getCertDer(b64: string): ArrayBuffer {
     const bin = atob(b64);
@@ -102,6 +105,27 @@
         }
       } catch (e) {
         error = '파일을 읽을 수 없습니다: ' + (e instanceof Error ? e.message : String(e));
+      }
+    } else if (file.name.endsWith('.pkis-req')) {
+      try {
+        const buf = await file.arrayBuffer();
+        const parsed = unpackPkisFile(buf);
+        if (parsed.type === 'approval-req') {
+          fileType = 'approval-req';
+          approvalInfo = {
+            requestId: parsed.requestId,
+            requesterName: parsed.requesterCert ? extractCN(parsed.requesterCert) : undefined,
+            requesterCert: parsed.requesterCert,
+            approverName: parsed.approverName,
+            payload: parsed.payload
+          };
+        } else {
+          // Legacy countersignature request
+          fileType = 'pkis-req';
+        }
+      } catch {
+        // Not a PKIS container — legacy format
+        fileType = 'pkis-req';
       }
     } else {
       // Legacy .pkis-req (countersignature request)
@@ -281,9 +305,60 @@
     }
   }
 
+  // Approve a .pkis-req approval request and send gate_key to requester via Supabase
+  async function approveGated() {
+    if (!requestFile || !identity || !approvalInfo.payload || !approvalInfo.requestId) return;
+    error = '';
+    signing = true;
+    try {
+      const pkcs8 = await unsealKey({
+        sealed: identity.sealedKey,
+        password: identity.sealedKey.method === 'password' ? password : undefined
+      });
+      const certDer = getCertDer(identity.certDer);
+
+      const requesterCertDer = approvalInfo.requesterCert
+        ? getCertDer(approvalInfo.requesterCert)
+        : certDer; // fallback: self
+
+      const gateKeyEnvDer = await processApproval(
+        approvalInfo.payload,
+        pkcs8,
+        certDer,
+        requesterCertDer
+      );
+
+      // Send via Supabase
+      const channel = supabase.channel('approval-' + approvalInfo.requestId);
+      await new Promise<void>((resolve) => {
+        channel.subscribe((status: string) => {
+          if (status === 'SUBSCRIBED') {
+            const bytes = new Uint8Array(gateKeyEnvDer);
+            let bin = '';
+            for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
+            channel.send({
+              type: 'broadcast',
+              event: 'approved',
+              payload: { gateKeyEnv: btoa(bin) }
+            });
+            setTimeout(() => { supabase.removeChannel(channel); resolve(); }, 800);
+          }
+        });
+      });
+
+      showToast('승인이 완료되어 요청자에게 전송되었습니다.', 'success');
+      done = true;
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      signing = false;
+    }
+  }
+
   function sign() {
     if (fileType === 'pkis-reqsign') signReqsign();
     else if (fileType === 'pkis-cosign') signCosign();
+    else if (fileType === 'approval-req') approveGated();
     else signLegacy();
   }
 
@@ -295,6 +370,7 @@
     reqMeta = {};
     reqsignInfo = {};
     cosignInfo = {};
+    approvalInfo = {};
     fileType = null;
   }
 </script>
@@ -332,6 +408,9 @@
       {#if fileType === 'pkis-cosign' && cosignInfo.requestId}
         <p class="text-xs" style="color:var(--text-dim)">공동 서명이 요청자의 CMS에 추가되었습니다.</p>
       {/if}
+      {#if fileType === 'approval-req'}
+        <p class="text-xs" style="color:var(--text-dim)">복호화 키가 요청자에게 실시간으로 전달되었습니다.</p>
+      {/if}
       <div class="flex gap-3">
         <button on:click={reset} class="btn-secondary flex-1">다른 요청 처리</button>
         <button on:click={() => goto(base + '/')} class="btn-primary flex-1">홈으로</button>
@@ -349,7 +428,7 @@
           on:click={() => {
             const i = document.createElement('input');
             i.type = 'file';
-            i.accept = '.pkis-req,.pkis-reqsign,.pkis-cosign';
+            i.accept = '.pkis-reqsign,.pkis-cosign,.pkis-req';
             i.onchange = () => { if (i.files?.[0]) requestFile = i.files[0]; };
             i.click();
           }}
@@ -358,7 +437,7 @@
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
               d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
           </svg>
-          <div class="text-sm" style="color:var(--text-muted)">.pkis-reqsign, .pkis-cosign 또는 .pkis-req 파일 선택</div>
+          <div class="text-sm" style="color:var(--text-muted)">.pkis-reqsign, .pkis-cosign, .pkis-req 파일 선택</div>
           <div class="text-xs mt-1" style="color:var(--text-dim)">또는 QR 코드로 스캔하세요</div>
         </button>
       {:else}
@@ -423,6 +502,22 @@
             {/if}
             <div class="text-xs mt-1" style="color:var(--text-dim)">
               서명하면 요청자의 CMS에 내 서명이 추가됩니다.
+            </div>
+          </div>
+        {/if}
+
+        <!-- approval-req 정보 -->
+        {#if fileType === 'approval-req'}
+          <div class="p-4 rounded-xl space-y-2 mb-3" style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3)">
+            <div class="text-sm font-semibold" style="color:var(--text)">복호화 승인 요청</div>
+            {#if approvalInfo.requesterName}
+              <div class="flex gap-2 text-sm">
+                <span style="color:var(--text-muted)">요청자:</span>
+                <span style="color:var(--text)">{approvalInfo.requesterName}</span>
+              </div>
+            {/if}
+            <div class="text-xs mt-1" style="color:var(--text-muted)">
+              승인하면 요청자가 파일을 복호화할 수 있게 됩니다.
             </div>
           </div>
         {/if}

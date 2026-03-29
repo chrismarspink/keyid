@@ -67,7 +67,7 @@ export interface FileRecord {
   name: string;
   /** Original input filename */
   originalName: string;
-  type: 'signed' | 'encrypted';
+  type: 'signed' | 'encrypted' | 'gated';
   /** Output file size in bytes */
   size: number;
   createdAt: string;

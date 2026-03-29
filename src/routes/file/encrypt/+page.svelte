@@ -1,13 +1,16 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import { base } from '$app/paths';
   import { loadIdentity, saveFileRecord, getAllExpiredIdentities, type IdentityRecord } from '$lib/storage/keystore';
   import { getAllContacts, type Contact } from '$lib/storage/contacts';
   import { encryptForRecipients, decryptEnveloped, decryptAndInspect, packPkisFile, unpackPkisFile, compressData, decompressData } from '$lib/crypto/cms';
+  import { encryptApprovalGated, unlockGatedPayload, unpackApprovalPayload } from '$lib/crypto/approval';
   import { generateIdenticon } from '$lib/crypto/identicon';
   import { unsealKey } from '$lib/crypto/protection';
   import { downloadFile, retrieveLaunchedFile } from '$lib/fileHandler';
+  import { supabase } from '$lib/supabase';
+  import { pendingViewerFiles } from '$lib/viewerStore';
 
   let identity: IdentityRecord | null = null;
   let contacts: Contact[] = [];
@@ -23,6 +26,10 @@
   let encryptMessage = '';
   let compressBeforeEncrypt = true;
 
+  // Approval-gated encrypt
+  let approvalGated = false;
+  let approverContactId: number | null = null;
+
   // Decrypt state
   let decryptFile: File | null = null;
   let decryptDropActive = false;
@@ -31,6 +38,20 @@
   let decrypting = false;
   let decryptUsedArchivedKey = false;
   let decryptSignerInfo: { name: string; signingTime?: string; message?: string; fingerprint?: string; valid?: boolean } | null = null;
+  let decryptedBytes: Uint8Array | null = null;
+  let decryptedFilename = '';
+  let decryptedMimeType = '';
+
+  // Gated decrypt state
+  let isGated = false;
+  let gatedPayload: ArrayBuffer | null = null;
+  let gatedApproverName = '';
+  let gatedFilename = '';
+  let gatedMimeType = '';
+  let approvalRequestId = '';
+  let awaitingApproval = false;
+  let gateKeyEnvDer: ArrayBuffer | null = null;
+  let approvalChannel: ReturnType<typeof supabase.channel> | null = null;
 
   // Unlock method
   let unlockMethod: 'biometric' | 'password' = 'biometric';
@@ -55,12 +76,31 @@
       const f = new File([launched.data], launched.name, { type: launched.type });
       if (launched.name.endsWith('.pkis')) {
         tab = 'decrypt';
-        decryptFile = f;
+        setDecryptFile(f);
       } else {
         selectedFile = f;
       }
     }
   });
+
+  onDestroy(() => {
+    if (approvalChannel) { supabase.removeChannel(approvalChannel); approvalChannel = null; }
+  });
+
+  function setDecryptFile(f: File | null) {
+    decryptFile = f;
+    decryptDone = false;
+    decryptError = '';
+    decryptSignerInfo = null;
+    decryptedBytes = null;
+    // Reset gated state
+    isGated = false;
+    gatedPayload = null;
+    gateKeyEnvDer = null;
+    awaitingApproval = false;
+    approvalRequestId = '';
+    if (approvalChannel) { supabase.removeChannel(approvalChannel); approvalChannel = null; }
+  }
 
   function toggleRecipient(id: number | undefined) {
     if (id === undefined) return;
@@ -78,6 +118,20 @@
     if (n < 1024) return `${n} B`;
     if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`;
     return `${(n / 1048576).toFixed(1)} MB`;
+  }
+
+  function toB64(buf: ArrayBuffer): string {
+    const bytes = new Uint8Array(buf);
+    let bin = '';
+    for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+
+  function fromB64(b64: string): ArrayBuffer {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes.buffer;
   }
 
   async function encrypt() {
@@ -98,19 +152,31 @@
       }
 
       let fileData = await selectedFile.arrayBuffer();
-      if (compressBeforeEncrypt) {
-        fileData = await compressData(fileData);
-      }
-      const result = await encryptForRecipients(fileData, recipientCerts);
+      if (compressBeforeEncrypt) fileData = await compressData(fileData);
+
       const baseName = selectedFile.name.replace(/\.[^.]+$/, '');
       const outName = `${baseName}.pkis`;
-      const packed = packPkisFile('encrypted', result.der, selectedFile.name, selectedFile.type, encryptMessage.trim() || undefined);
-      downloadFile(packed, outName, 'application/pkis');
+      let packed: ArrayBuffer;
 
+      if (approvalGated) {
+        const approverContact = contacts.find(c => c.id === approverContactId);
+        if (!approverContact) { error = '승인자를 선택하세요.'; encrypting = false; return; }
+        const approverCert = getCertDer(approverContact.certDer);
+        const payload = await encryptApprovalGated(fileData, recipientCerts, approverCert);
+        packed = packPkisFile('gated', payload, selectedFile.name, selectedFile.type, encryptMessage.trim() || undefined, {
+          approverId: approverContact.fingerprint ?? approverContact.email,
+          approverName: approverContact.commonName
+        });
+      } else {
+        const result = await encryptForRecipients(fileData, recipientCerts);
+        packed = packPkisFile('encrypted', result.der, selectedFile.name, selectedFile.type, encryptMessage.trim() || undefined);
+      }
+
+      downloadFile(packed, outName, 'application/pkis');
       await saveFileRecord({
         name: outName,
         originalName: selectedFile.name,
-        type: 'encrypted',
+        type: approvalGated ? 'gated' : 'encrypted',
         size: packed.byteLength,
         createdAt: new Date().toISOString(),
         recipientCount: recipientCerts.length,
@@ -131,7 +197,34 @@
     decryptError = '';
     decrypting = true;
     try {
-      // Unseal to raw PKCS8 bytes (NOT CryptoKey) — decryptEnveloped needs raw bytes for ECDH import
+      let rawData = await decryptFile.arrayBuffer();
+
+      // Check if PKIS container
+      let pkisType: string | undefined;
+      let containerMsg: string | undefined;
+      let innerFilename: string | undefined;
+      let innerMimeType: string | undefined;
+      try {
+        const pkis = unpackPkisFile(rawData);
+        pkisType = pkis.type;
+        rawData = pkis.payload;
+        containerMsg = pkis.message;
+        innerFilename = pkis.filename;
+        innerMimeType = pkis.mimeType;
+
+        // Handle approval-gated files
+        if (pkis.type === 'gated') {
+          isGated = true;
+          gatedPayload = pkis.payload;
+          gatedApproverName = pkis.approverName ?? '';
+          gatedFilename = pkis.filename ?? decryptFile.name.replace(/\.pkis$/, '');
+          gatedMimeType = pkis.mimeType ?? '';
+          decrypting = false;
+          return;
+        }
+      } catch { /* not a container, use raw */ }
+
+      // Normal decrypt
       const pkcs8 = await unsealKey({
         sealed: identity.sealedKey,
         passwordBackup: identity.passwordBackup ?? undefined,
@@ -140,18 +233,6 @@
       });
 
       const certDer = getCertDer(identity.certDer);
-      let rawData = await decryptFile.arrayBuffer();
-
-      // Check if file is a PKIS container and unwrap
-      let containerMsg: string | undefined;
-      let innerFilename: string | undefined;
-      try {
-        const pkis = unpackPkisFile(rawData);
-        rawData = pkis.payload;
-        containerMsg = pkis.message;
-        innerFilename = pkis.filename;
-      } catch { /* not a container, use raw */ }
-
       const decrypted = await decryptAndInspect(rawData, pkcs8, certDer);
       decryptSignerInfo = null;
 
@@ -166,23 +247,24 @@
         };
       }
 
-      // Try decompression (files encrypted with compression option)
       let finalData = decrypted.plaintext;
       try { finalData = await decompressData(decrypted.plaintext); } catch { /* not compressed */ }
 
-      const baseName = (innerFilename ?? decryptFile.name).replace(/\.pkis$/, '');
+      const filename = innerFilename ?? decryptFile.name.replace(/\.pkis$/, '');
+      decryptedBytes = new Uint8Array(finalData);
+      decryptedFilename = filename;
+      decryptedMimeType = innerMimeType ?? '';
+
+      // Download
       const blob = new Blob([finalData]);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url;
-      a.download = baseName || 'decrypted';
-      a.click();
+      a.href = url; a.download = filename || 'decrypted'; a.click();
       URL.revokeObjectURL(url);
+
       decryptDone = true;
       showToast('복호화가 완료되었습니다.', 'success');
 
-      // Check if current cert fingerprint is in archived list
-      // (meaning this file was encrypted for an older version of the identity)
       const expired = await getAllExpiredIdentities();
       decryptUsedArchivedKey = expired.some(e => e.fingerprint === identity!.fingerprint);
     } catch (e) {
@@ -192,12 +274,85 @@
     }
   }
 
-  function handleDecryptDrop(e: DragEvent) {
-    e.preventDefault();
-    decryptDropActive = false;
-    const file = e.dataTransfer?.files[0];
-    if (file) { decryptFile = file; decryptDone = false; decryptError = ''; }
+  async function generateApprovalRequest() {
+    if (!gatedPayload || !identity) return;
+    try {
+      const { approvalCmsDer } = unpackApprovalPayload(gatedPayload);
+      approvalRequestId = crypto.randomUUID();
+
+      const packed = packPkisFile('approval-req', approvalCmsDer, gatedFilename, gatedMimeType, undefined, {
+        requestId: approvalRequestId,
+        requesterCert: identity.certDer,
+        approverId: identity.fingerprint ?? identity.email,
+        approverName: gatedApproverName
+      });
+
+      const reqName = gatedFilename.replace(/\.[^.]+$/, '') + '.pkis-req';
+      downloadFile(packed, reqName, 'application/pkis-req');
+
+      // Listen for approver's response
+      awaitingApproval = true;
+      approvalChannel = supabase.channel('approval-' + approvalRequestId);
+      approvalChannel
+        .on('broadcast', { event: 'approved' }, (msg: { payload: { gateKeyEnv: string } }) => {
+          gateKeyEnvDer = fromB64(msg.payload.gateKeyEnv);
+          showToast('승인이 완료되었습니다. 복호화하세요.', 'success');
+        })
+        .subscribe();
+
+      showToast('승인 요청 파일이 다운로드되었습니다. 승인자에게 전달하세요.', 'info');
+    } catch (e) {
+      decryptError = e instanceof Error ? e.message : String(e);
+    }
   }
+
+  async function decryptGated() {
+    if (!gatedPayload || !gateKeyEnvDer || !identity) return;
+    decryptError = '';
+    decrypting = true;
+    try {
+      const pkcs8 = await unsealKey({
+        sealed: identity.sealedKey,
+        passwordBackup: identity.passwordBackup ?? undefined,
+        password: unlockMethod === 'password' ? password : undefined,
+        preferPassword: unlockMethod === 'password'
+      });
+      const certDer = getCertDer(identity.certDer);
+
+      const innerCmsDer = await unlockGatedPayload(gatedPayload, gateKeyEnvDer, pkcs8, certDer);
+      const decrypted = await decryptEnveloped(innerCmsDer, pkcs8, certDer);
+
+      let finalData = decrypted.plaintext;
+      try { finalData = await decompressData(finalData); } catch {}
+
+      decryptedBytes = new Uint8Array(finalData);
+      decryptedFilename = gatedFilename;
+      decryptedMimeType = gatedMimeType;
+
+      // Download
+      const blob = new Blob([finalData]);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = gatedFilename || 'decrypted'; a.click();
+      URL.revokeObjectURL(url);
+
+      if (approvalChannel) { supabase.removeChannel(approvalChannel); approvalChannel = null; }
+      decryptDone = true;
+      showToast('복호화가 완료되었습니다.', 'success');
+    } catch (e) {
+      decryptError = e instanceof Error ? e.message : String(e);
+    } finally {
+      decrypting = false;
+    }
+  }
+
+  function openInViewer() {
+    if (!decryptedBytes) return;
+    pendingViewerFiles.set([{ name: decryptedFilename, data: decryptedBytes, mimeType: decryptedMimeType }]);
+    goto(base + '/file/view');
+  }
+
+  $: isPdf = decryptedFilename.toLowerCase().endsWith('.pdf') || decryptedMimeType === 'application/pdf';
 </script>
 
 <svelte:head>
@@ -322,8 +477,8 @@
         <div class="text-right text-xs mt-1 text-gray-400">{encryptMessage.length}/256</div>
       </div>
 
-      <!-- Compression option -->
-      <div class="panel mb-4">
+      <!-- Options -->
+      <div class="panel mb-4 space-y-3">
         <label class="flex items-center gap-3 cursor-pointer">
           <input type="checkbox" bind:checked={compressBeforeEncrypt} class="w-4 h-4 accent-navy-600" />
           <div>
@@ -331,6 +486,38 @@
             <div class="text-xs text-gray-400 mt-0.5">파일 크기를 줄인 후 암호화합니다 (권장)</div>
           </div>
         </label>
+
+        <div class="border-t border-gray-100 pt-3">
+          <label class="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" bind:checked={approvalGated} class="w-4 h-4 accent-navy-600" />
+            <div>
+              <div class="text-sm font-semibold text-gray-700">승인 후 복호화</div>
+              <div class="text-xs text-gray-400 mt-0.5">지정된 승인자의 승인 없이는 열 수 없습니다</div>
+            </div>
+          </label>
+
+          {#if approvalGated}
+            <div class="mt-3 ml-7">
+              <div class="text-xs text-gray-500 mb-2">승인자 선택</div>
+              {#if contacts.length === 0}
+                <p class="text-xs text-gray-400">연락처에 승인자를 먼저 추가하세요.</p>
+              {:else}
+                <div class="space-y-1 max-h-40 overflow-y-auto">
+                  {#each contacts as c}
+                    <label class="flex items-center gap-2 p-2 rounded-lg hover:bg-gray-50 cursor-pointer">
+                      <input type="radio" name="approver" value={c.id} bind:group={approverContactId}
+                        class="w-4 h-4 accent-navy-600" />
+                      <div>
+                        <div class="text-sm font-medium text-slate-800">{c.commonName}</div>
+                        <div class="text-xs text-gray-400">{c.email}</div>
+                      </div>
+                    </label>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          {/if}
+        </div>
       </div>
 
       {#if error}
@@ -354,7 +541,6 @@
   {:else}
     <!-- ── Decrypt ── -->
 
-    <!-- File picker with drag & drop -->
     <div class="panel mb-4">
       <h2 class="text-sm font-semibold text-gray-700 mb-3">복호화할 파일 (.pkis)</h2>
       {#if !decryptFile}
@@ -364,11 +550,11 @@
             {decryptDropActive ? 'border-navy-600 bg-navy-50' : 'border-gray-200 hover:border-gray-300'}"
           on:dragover|preventDefault={() => (decryptDropActive = true)}
           on:dragleave={() => (decryptDropActive = false)}
-          on:drop={handleDecryptDrop}
+          on:drop={(e) => { e.preventDefault(); decryptDropActive = false; const f = e.dataTransfer?.files[0]; if (f) setDecryptFile(f); }}
           on:click={() => {
             const i = document.createElement('input');
             i.type = 'file'; i.accept = '.pkis';
-            i.onchange = () => { if (i.files?.[0]) { decryptFile = i.files[0]; decryptDone = false; decryptError = ''; } };
+            i.onchange = () => { if (i.files?.[0]) setDecryptFile(i.files[0]); };
             i.click();
           }}
         >
@@ -385,7 +571,7 @@
             <div class="font-medium text-slate-800 truncate">{decryptFile.name}</div>
             <div class="text-xs text-gray-400">{formatBytes(decryptFile.size)}</div>
           </div>
-          <button on:click={() => { decryptFile = null; decryptDone = false; decryptError = ''; }} class="btn-icon text-gray-400">
+          <button on:click={() => setDecryptFile(null)} class="btn-icon text-gray-400">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
             </svg>
@@ -394,53 +580,94 @@
       {/if}
     </div>
 
-    <!-- Key unlock -->
-    <div class="panel mb-4">
-      <h2 class="text-sm font-semibold text-gray-700 mb-3">키 잠금 해제</h2>
+    <!-- Gated file info -->
+    {#if isGated && !decryptDone}
+      <div class="panel mb-4" style="border:1px solid rgba(245,158,11,0.3); background:rgba(245,158,11,0.06)">
+        <div class="flex items-start gap-3">
+          <svg class="w-8 h-8 flex-shrink-0 mt-0.5" style="color:#f59e0b" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+              d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+          </svg>
+          <div class="flex-1">
+            <div class="font-semibold text-sm" style="color:#92400e">승인 후 복호화 파일</div>
+            <div class="text-xs mt-1" style="color:#b45309">
+              이 파일은 <strong>{gatedApproverName || '지정된 승인자'}</strong>의 승인이 있어야 복호화할 수 있습니다.
+            </div>
+          </div>
+        </div>
 
-      {#if showMethodToggle}
-        <div class="flex gap-2 p-1 bg-gray-100 rounded-xl mb-3">
-          <button
-            class="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-medium transition"
-            class:bg-white={unlockMethod === 'biometric'} class:shadow-sm={unlockMethod === 'biometric'}
-            class:text-navy-600={unlockMethod === 'biometric'} class:text-gray-500={unlockMethod !== 'biometric'}
-            on:click={() => (unlockMethod = 'biometric')}
-          >
+        {#if !awaitingApproval}
+          <button class="btn-primary w-full mt-4" on:click={generateApprovalRequest}>
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+            </svg>
+            승인 요청 파일 만들기
+          </button>
+        {:else if !gateKeyEnvDer}
+          <div class="flex items-center gap-2 mt-4 p-3 rounded-xl" style="background:rgba(59,130,246,0.1)">
+            <div class="w-4 h-4 rounded-full border-2 border-t-transparent animate-spin flex-shrink-0" style="border-color:#3b82f6;border-top-color:transparent"></div>
+            <div class="text-xs" style="color:#3b82f6">
+              승인자의 응답을 기다리는 중입니다… 승인 요청 파일을 <strong>{gatedApproverName}</strong>에게 전달하세요.
+            </div>
+          </div>
+        {:else}
+          <div class="mt-3 p-3 rounded-xl text-xs text-green-700" style="background:rgba(16,185,129,0.1)">
+            승인이 완료되었습니다. 아래에서 복호화하세요.
+          </div>
+        {/if}
+      </div>
+    {/if}
+
+    <!-- Key unlock (only for non-gated or gated-with-approval) -->
+    {#if (!isGated || gateKeyEnvDer) && !decryptDone}
+      <div class="panel mb-4">
+        <h2 class="text-sm font-semibold text-gray-700 mb-3">키 잠금 해제</h2>
+
+        {#if showMethodToggle}
+          <div class="flex gap-2 p-1 bg-gray-100 rounded-xl mb-3">
+            <button
+              class="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-medium transition"
+              class:bg-white={unlockMethod === 'biometric'} class:shadow-sm={unlockMethod === 'biometric'}
+              class:text-navy-600={unlockMethod === 'biometric'} class:text-gray-500={unlockMethod !== 'biometric'}
+              on:click={() => (unlockMethod = 'biometric')}
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M12 11c0 3.517-1.009 6.799-2.753 9.571m-3.44-2.04l.054-.09A13.916 13.916 0 008 11a4 4 0 118 0c0 1.017-.07 2.019-.203 3m-2.118 6.844A21.88 21.88 0 0015.171 17m3.839 1.132c.645-2.266.99-4.659.99-7.132A8 8 0 008 4.07M3 15.364c.64-1.319 1-2.8 1-4.364 0-1.457.39-2.823 1.07-4"/>
+              </svg>
+              지문 인증
+            </button>
+            <button
+              class="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-medium transition"
+              class:bg-white={unlockMethod === 'password'} class:shadow-sm={unlockMethod === 'password'}
+              class:text-navy-600={unlockMethod === 'password'} class:text-gray-500={unlockMethod !== 'password'}
+              on:click={() => (unlockMethod = 'password')}
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/>
+              </svg>
+              비밀번호
+            </button>
+          </div>
+        {/if}
+
+        {#if unlockMethod === 'password' || identity?.sealedKey.method === 'password'}
+          <input class="input" type="password" placeholder="개인 키 비밀번호"
+            bind:value={password}
+            on:keydown={(e) => e.key === 'Enter' && decryptFile && (isGated ? decryptGated() : decrypt())} />
+        {:else}
+          <div class="flex items-center gap-3 p-3 bg-blue-50 rounded-xl text-sm text-blue-700">
+            <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                 d="M12 11c0 3.517-1.009 6.799-2.753 9.571m-3.44-2.04l.054-.09A13.916 13.916 0 008 11a4 4 0 118 0c0 1.017-.07 2.019-.203 3m-2.118 6.844A21.88 21.88 0 0015.171 17m3.839 1.132c.645-2.266.99-4.659.99-7.132A8 8 0 008 4.07M3 15.364c.64-1.319 1-2.8 1-4.364 0-1.457.39-2.823 1.07-4"/>
             </svg>
-            지문 인증
-          </button>
-          <button
-            class="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-medium transition"
-            class:bg-white={unlockMethod === 'password'} class:shadow-sm={unlockMethod === 'password'}
-            class:text-navy-600={unlockMethod === 'password'} class:text-gray-500={unlockMethod !== 'password'}
-            on:click={() => (unlockMethod = 'password')}
-          >
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/>
-            </svg>
-            비밀번호
-          </button>
-        </div>
-      {/if}
-
-      {#if unlockMethod === 'password' || identity?.sealedKey.method === 'password'}
-        <input class="input" type="password" placeholder="개인 키 비밀번호"
-          bind:value={password}
-          on:keydown={(e) => e.key === 'Enter' && decryptFile && decrypt()} />
-      {:else}
-        <div class="flex items-center gap-3 p-3 bg-blue-50 rounded-xl text-sm text-blue-700">
-          <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-              d="M12 11c0 3.517-1.009 6.799-2.753 9.571m-3.44-2.04l.054-.09A13.916 13.916 0 008 11a4 4 0 118 0c0 1.017-.07 2.019-.203 3m-2.118 6.844A21.88 21.88 0 0015.171 17m3.839 1.132c.645-2.266.99-4.659.99-7.132A8 8 0 008 4.07M3 15.364c.64-1.319 1-2.8 1-4.364 0-1.457.39-2.823 1.07-4"/>
-          </svg>
-          복호화 버튼을 누르면 지문 인증을 요청합니다
-        </div>
-      {/if}
-    </div>
+            복호화 버튼을 누르면 지문 인증을 요청합니다
+          </div>
+        {/if}
+      </div>
+    {/if}
 
     {#if decryptError}
       <div class="p-4 bg-red-50 rounded-xl text-sm text-red-600 mb-4">{decryptError}</div>
@@ -451,8 +678,19 @@
         복호화 완료 — 파일이 다운로드되었습니다.
       </div>
 
+      {#if isPdf && decryptedBytes}
+        <button class="btn-primary w-full mb-4" on:click={openInViewer}>
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+          </svg>
+          보안 PDF 뷰어로 열기
+        </button>
+      {/if}
+
       {#if decryptSignerInfo}
-        <!-- Signer info from inner SignedData -->
         <div class="panel mb-4 flex items-start gap-4">
           <img
             src={generateIdenticon(decryptSignerInfo.name)}
@@ -487,23 +725,41 @@
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
               d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
           </svg>
-          <span>이 파일은 <strong>이전 버전 신원</strong>으로 암호화된 파일입니다. 현재 신원이 갱신되었습니다.</span>
+          <span>이 파일은 <strong>이전 버전 신원</strong>으로 암호화된 파일입니다.</span>
         </div>
       {/if}
     {/if}
 
-    <button class="btn-primary w-full" disabled={!decryptFile || decrypting} on:click={decrypt}>
-      {#if decrypting}
-        <div class="w-5 h-5 rounded-full border-2 border-white border-t-transparent animate-spin"></div>
-        {unlockMethod === 'biometric' ? '지문 인증 중…' : '복호화 중…'}
-      {:else}
-        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-            d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"/>
-        </svg>
-        복호화하기
+    <!-- Decrypt button -->
+    {#if !decryptDone}
+      {#if isGated && gateKeyEnvDer}
+        <button class="btn-primary w-full" disabled={decrypting} on:click={decryptGated}>
+          {#if decrypting}
+            <div class="w-5 h-5 rounded-full border-2 border-white border-t-transparent animate-spin"></div>
+            {unlockMethod === 'biometric' ? '지문 인증 중…' : '복호화 중…'}
+          {:else}
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"/>
+            </svg>
+            승인된 파일 복호화하기
+          {/if}
+        </button>
+      {:else if !isGated}
+        <button class="btn-primary w-full" disabled={!decryptFile || decrypting} on:click={decrypt}>
+          {#if decrypting}
+            <div class="w-5 h-5 rounded-full border-2 border-white border-t-transparent animate-spin"></div>
+            {unlockMethod === 'biometric' ? '지문 인증 중…' : '복호화 중…'}
+          {:else}
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"/>
+            </svg>
+            복호화하기
+          {/if}
+        </button>
       {/if}
-    </button>
+    {/if}
   {/if}
 </div>
 
