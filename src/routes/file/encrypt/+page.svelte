@@ -5,6 +5,7 @@
   import { loadIdentity, saveFileRecord, getAllExpiredIdentities, type IdentityRecord } from '$lib/storage/keystore';
   import { getAllContacts, type Contact } from '$lib/storage/contacts';
   import { encryptForRecipients, decryptEnveloped, decryptAndInspect, packPkisFile, unpackPkisFile, compressData, decompressData } from '$lib/crypto/cms';
+  import { filesToPayload, isTar, unpackTar } from '$lib/tar';
   import { encryptApprovalGated, unlockGatedPayload, unpackApprovalPayload } from '$lib/crypto/approval';
   import { generateIdenticon } from '$lib/crypto/identicon';
   import { unsealKey } from '$lib/crypto/protection';
@@ -15,6 +16,7 @@
   let identity: IdentityRecord | null = null;
   let contacts: Contact[] = [];
   let selectedFile: File | null = null;
+  let selectedFileCount = 1;
   let recipients: Set<number> = new Set();
   let includeSelf = true;
   let encrypting = false;
@@ -105,6 +107,12 @@
     approvalRequestId = '';
     if (approvalChannel) { supabase.removeChannel(approvalChannel); approvalChannel = null; }
     decryptViewerOnly = false;
+  }
+
+  async function selectFiles(files: File[]) {
+    if (files.length === 0) return;
+    selectedFileCount = files.length;
+    selectedFile = await filesToPayload(files);
   }
 
   function toggleRecipient(id: number | undefined) {
@@ -262,13 +270,32 @@
       try { finalData = await decompressData(decrypted.plaintext); } catch { /* not compressed */ }
 
       const filename = innerFilename ?? decryptFile.name.replace(/\.pkis$/, '');
-      decryptedBytes = new Uint8Array(finalData);
+      const bytes = new Uint8Array(finalData);
+
+      // Handle TAR bundle (multi-file)
+      if (isTar(bytes)) {
+        const tarFiles = unpackTar(bytes);
+        if (decryptViewerOnly) {
+          pendingViewerFiles.set(tarFiles.map(f => ({ name: f.name, data: f.data, mimeType: '' })));
+          goto(base + '/file/view');
+          return;
+        }
+        for (const f of tarFiles) downloadFile(f.data, f.name, '');
+        decryptedBytes = bytes;
+        decryptedFilename = `${tarFiles.length}개 파일`;
+        decryptedMimeType = 'application/x-tar';
+        decryptDone = true;
+        showToast(`${tarFiles.length}개 파일이 복호화되었습니다.`, 'success');
+        return;
+      }
+
+      decryptedBytes = bytes;
       decryptedFilename = filename;
       decryptedMimeType = innerMimeType ?? '';
 
       if (decryptViewerOnly) {
         // Viewer-only: open in viewer immediately, no download
-        pendingViewerFiles.set([{ name: filename, data: new Uint8Array(finalData), mimeType: innerMimeType ?? '' }]);
+        pendingViewerFiles.set([{ name: filename, data: bytes, mimeType: innerMimeType ?? '' }]);
         goto(base + '/file/view');
         return;
       }
@@ -343,15 +370,33 @@
       let finalData = decrypted.plaintext;
       try { finalData = await decompressData(finalData); } catch {}
 
-      decryptedBytes = new Uint8Array(finalData);
+      const gatedBytes = new Uint8Array(finalData);
+      if (approvalChannel) { supabase.removeChannel(approvalChannel); approvalChannel = null; }
+
+      // Handle TAR bundle (multi-file)
+      if (isTar(gatedBytes)) {
+        const tarFiles = unpackTar(gatedBytes);
+        if (decryptViewerOnly) {
+          pendingViewerFiles.set(tarFiles.map(f => ({ name: f.name, data: f.data, mimeType: '' })));
+          goto(base + '/file/view');
+          return;
+        }
+        for (const f of tarFiles) downloadFile(f.data, f.name, '');
+        decryptedBytes = gatedBytes;
+        decryptedFilename = `${tarFiles.length}개 파일`;
+        decryptedMimeType = 'application/x-tar';
+        decryptDone = true;
+        showToast(`${tarFiles.length}개 파일이 복호화되었습니다.`, 'success');
+        return;
+      }
+
+      decryptedBytes = gatedBytes;
       decryptedFilename = gatedFilename;
       decryptedMimeType = gatedMimeType;
 
-      if (approvalChannel) { supabase.removeChannel(approvalChannel); approvalChannel = null; }
-
       if (decryptViewerOnly) {
         // Viewer-only: open in viewer immediately, no download
-        pendingViewerFiles.set([{ name: gatedFilename, data: new Uint8Array(finalData), mimeType: gatedMimeType }]);
+        pendingViewerFiles.set([{ name: gatedFilename, data: gatedBytes, mimeType: gatedMimeType }]);
         goto(base + '/file/view');
         return;
       }
@@ -440,24 +485,26 @@
               {dropActive ? 'border-navy-600 bg-navy-50' : 'border-gray-200 hover:border-gray-300'}"
             on:dragover|preventDefault={() => (dropActive = true)}
             on:dragleave={() => (dropActive = false)}
-            on:drop={(e) => { e.preventDefault(); dropActive = false; const f = e.dataTransfer?.files[0]; if (f) selectedFile = f; }}
+            on:drop={async (e) => { e.preventDefault(); dropActive = false; const fs = e.dataTransfer?.files; if (fs && fs.length > 0) await selectFiles(Array.from(fs)); }}
             on:click={() => fileInput.click()}
           >
             <svg class="w-10 h-10 text-gray-300 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
                 d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
             </svg>
-            <div class="text-sm text-gray-500">파일을 끌어다 놓거나 클릭하여 선택</div>
+            <div class="text-sm text-gray-500">여러 파일 선택 가능 (자동으로 묶어 암호화)</div>
           </button>
-          <input bind:this={fileInput} type="file" class="hidden"
-            on:change={(e) => { const f = e.currentTarget.files?.[0]; if (f) selectedFile = f; }} />
+          <input bind:this={fileInput} type="file" multiple class="hidden"
+            on:change={async (e) => { const fs = e.currentTarget.files; if (fs && fs.length > 0) await selectFiles(Array.from(fs)); }} />
         {:else}
           <div class="flex items-center gap-3 p-4 bg-blue-50 rounded-xl">
             <div class="flex-1 min-w-0">
               <div class="font-medium text-slate-800 truncate">{selectedFile.name}</div>
-              <div class="text-xs text-gray-400">{formatBytes(selectedFile.size)}</div>
+              <div class="text-xs text-gray-400">
+                {#if selectedFileCount > 1}{selectedFileCount}개 파일 묶음 · {/if}{formatBytes(selectedFile.size)}
+              </div>
             </div>
-            <button on:click={() => (selectedFile = null)} class="btn-icon text-gray-400">
+            <button on:click={() => { selectedFile = null; selectedFileCount = 1; }} class="btn-icon text-gray-400">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
               </svg>
