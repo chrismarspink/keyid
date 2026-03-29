@@ -525,6 +525,8 @@ export interface PkisFile {
   approverId?: string;
   /** For gated/approval-req: approver's display name */
   approverName?: string;
+  /** If true, recipient must use the built-in viewer; file download is blocked */
+  viewerOnly?: boolean;
 }
 
 const MAGIC = new TextEncoder().encode('PKIS');
@@ -536,7 +538,7 @@ export function packPkisFile(
   filename?: string,
   mimeType?: string,
   message?: string,
-  extra?: { requestId?: string; requesterCert?: string; approverId?: string; approverName?: string }
+  extra?: { requestId?: string; requesterCert?: string; approverId?: string; approverName?: string; viewerOnly?: boolean }
 ): ArrayBuffer {
   const typeMap: Record<PkisFile['type'], number> = {
     signed: 0x01, encrypted: 0x02, cert: 0x03, request: 0x04, key: 0x05,
@@ -549,8 +551,9 @@ export function packPkisFile(
     msg: message ?? '',
     rid: extra?.requestId ?? '',
     rc: extra?.requesterCert ?? '',
-    aid: (extra as { approverId?: string })?.approverId ?? '',
-    an: (extra as { approverName?: string })?.approverName ?? ''
+    aid: extra?.approverId ?? '',
+    an: extra?.approverName ?? '',
+    vo: extra?.viewerOnly ? 1 : 0
   });
   const metaBytes = new TextEncoder().encode(meta);
   const metaLen = new DataView(new ArrayBuffer(4));
@@ -839,6 +842,7 @@ export function unpackPkisFile(raw: ArrayBuffer): PkisFile {
     requestId: meta.rid || undefined,
     requesterCert: meta.rc || undefined,
     approverId: meta.aid || undefined,
-    approverName: meta.an || undefined
+    approverName: meta.an || undefined,
+    viewerOnly: meta.vo === 1 ? true : undefined
   };
 }

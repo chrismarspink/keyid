@@ -29,6 +29,8 @@
   // Approval-gated encrypt
   let approvalGated = false;
   let approverContactId: number | null = null;
+  // Viewer-only policy
+  let viewerOnly = false;
 
   // Decrypt state
   let decryptFile: File | null = null;
@@ -52,6 +54,8 @@
   let awaitingApproval = false;
   let gateKeyEnvDer: ArrayBuffer | null = null;
   let approvalChannel: ReturnType<typeof supabase.channel> | null = null;
+  // Enforced viewer-only from decrypted PKIS metadata
+  let decryptViewerOnly = false;
 
   // Unlock method
   let unlockMethod: 'biometric' | 'password' = 'biometric';
@@ -100,6 +104,7 @@
     awaitingApproval = false;
     approvalRequestId = '';
     if (approvalChannel) { supabase.removeChannel(approvalChannel); approvalChannel = null; }
+    decryptViewerOnly = false;
   }
 
   function toggleRecipient(id: number | undefined) {
@@ -165,11 +170,14 @@
         const payload = await encryptApprovalGated(fileData, recipientCerts, approverCert);
         packed = packPkisFile('gated', payload, selectedFile.name, selectedFile.type, encryptMessage.trim() || undefined, {
           approverId: approverContact.fingerprint ?? approverContact.email,
-          approverName: approverContact.commonName
+          approverName: approverContact.commonName,
+          viewerOnly
         });
       } else {
         const result = await encryptForRecipients(fileData, recipientCerts);
-        packed = packPkisFile('encrypted', result.der, selectedFile.name, selectedFile.type, encryptMessage.trim() || undefined);
+        packed = packPkisFile('encrypted', result.der, selectedFile.name, selectedFile.type, encryptMessage.trim() || undefined, {
+          viewerOnly
+        });
       }
 
       downloadFile(packed, outName, 'application/pkis');
@@ -219,9 +227,11 @@
           gatedApproverName = pkis.approverName ?? '';
           gatedFilename = pkis.filename ?? decryptFile.name.replace(/\.pkis$/, '');
           gatedMimeType = pkis.mimeType ?? '';
+          decryptViewerOnly = pkis.viewerOnly ?? false;
           decrypting = false;
           return;
         }
+        decryptViewerOnly = pkis.viewerOnly ?? false;
       } catch { /* not a container, use raw */ }
 
       // Normal decrypt
@@ -254,6 +264,13 @@
       decryptedBytes = new Uint8Array(finalData);
       decryptedFilename = filename;
       decryptedMimeType = innerMimeType ?? '';
+
+      if (decryptViewerOnly) {
+        // Viewer-only: open in viewer immediately, no download
+        pendingViewerFiles.set([{ name: filename, data: new Uint8Array(finalData), mimeType: innerMimeType ?? '' }]);
+        goto(base + '/file/view');
+        return;
+      }
 
       // Download
       const blob = new Blob([finalData]);
@@ -329,6 +346,15 @@
       decryptedFilename = gatedFilename;
       decryptedMimeType = gatedMimeType;
 
+      if (approvalChannel) { supabase.removeChannel(approvalChannel); approvalChannel = null; }
+
+      if (decryptViewerOnly) {
+        // Viewer-only: open in viewer immediately, no download
+        pendingViewerFiles.set([{ name: gatedFilename, data: new Uint8Array(finalData), mimeType: gatedMimeType }]);
+        goto(base + '/file/view');
+        return;
+      }
+
       // Download
       const blob = new Blob([finalData]);
       const url = URL.createObjectURL(blob);
@@ -336,7 +362,6 @@
       a.href = url; a.download = gatedFilename || 'decrypted'; a.click();
       URL.revokeObjectURL(url);
 
-      if (approvalChannel) { supabase.removeChannel(approvalChannel); approvalChannel = null; }
       decryptDone = true;
       showToast('복호화가 완료되었습니다.', 'success');
     } catch (e) {
@@ -488,6 +513,13 @@
         </label>
 
         <div class="border-t border-gray-100 pt-3">
+          <label class="flex items-center gap-3 cursor-pointer mb-3">
+            <input type="checkbox" bind:checked={viewerOnly} class="w-4 h-4 accent-navy-600" />
+            <div>
+              <div class="text-sm font-semibold text-gray-700">뷰어 전용 모드</div>
+              <div class="text-xs text-gray-400 mt-0.5">수신자가 파일을 저장할 수 없고 보안 뷰어로만 볼 수 있습니다 (PDF 필수)</div>
+            </div>
+          </label>
           <label class="flex items-center gap-3 cursor-pointer">
             <input type="checkbox" bind:checked={approvalGated} class="w-4 h-4 accent-navy-600" />
             <div>
@@ -677,6 +709,16 @@
       <div class="p-4 bg-green-50 rounded-xl text-sm text-green-700 mb-4 text-center font-semibold">
         복호화 완료 — 파일이 다운로드되었습니다.
       </div>
+
+      {#if decryptViewerOnly}
+        <div class="flex items-center gap-2 p-3 rounded-xl text-xs mb-3" style="background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.2);color:#6366f1">
+          <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+          </svg>
+          이 파일은 <strong>뷰어 전용</strong>으로 암호화되었습니다. 파일 저장이 제한됩니다.
+        </div>
+      {/if}
 
       {#if isPdf && decryptedBytes}
         <button class="btn-primary w-full mb-4" on:click={openInViewer}>

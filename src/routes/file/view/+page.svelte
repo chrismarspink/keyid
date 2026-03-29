@@ -4,6 +4,8 @@
   import { base } from '$app/paths';
   import { pendingViewerFiles, type ViewerFile } from '$lib/viewerStore';
   import { loadIdentity } from '$lib/storage/keystore';
+  // Vite resolves this to the correct bundled URL (including base path)
+  import pdfWorkerSrc from 'pdfjs-dist/build/pdf.worker.mjs?url';
 
   let files: ViewerFile[] = [];
   let selected: ViewerFile | null = null;
@@ -55,9 +57,7 @@
 
     try {
       const pdfjsLib = await import('pdfjs-dist');
-      // Use bundled worker
-      const workerUrl = new URL('pdfjs-dist/build/pdf.worker.mjs', import.meta.url).href;
-      pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+      pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerSrc;
 
       const loadingTask = pdfjsLib.getDocument({ data: file.data.slice() });
       pdfDoc = await loadingTask.promise;
