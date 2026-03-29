@@ -188,6 +188,7 @@
         size: packed.byteLength,
         createdAt: new Date().toISOString(),
         recipientCount: recipientCerts.length,
+        viewerOnly: viewerOnly || undefined,
         data: packed
       });
 

@@ -3,11 +3,11 @@
   import { goto } from '$app/navigation';
   import { base } from '$app/paths';
   import { getAllFileRecords, deleteFileRecord, type FileRecord } from '$lib/storage/keystore';
-  import { downloadFile } from '$lib/fileHandler';
+  import { storeLaunchedFile, downloadFile } from '$lib/fileHandler';
 
   let records: FileRecord[] = [];
   let loading = true;
-  let filter: 'all' | 'signed' | 'encrypted' = 'all';
+  let filter: 'all' | 'signed' | 'encrypted' | 'gated' = 'all';
   let search = '';
   let selected = new Set<number>();
 
@@ -25,15 +25,18 @@
   });
 
   $: allChecked = filtered.length > 0 && filtered.every(r => r.id !== undefined && selected.has(r.id));
+  $: signedCount = records.filter(r => r.type === 'signed').length;
+  $: encryptedCount = records.filter(r => r.type === 'encrypted').length;
+  $: gatedCount = records.filter(r => r.type === 'gated').length;
+
+  function setFilter(val: string) {
+    filter = val as typeof filter;
+  }
 
   onMount(async () => {
     records = await getAllFileRecords();
     loading = false;
   });
-
-  function setFilter(val: string) {
-    filter = val as typeof filter;
-  }
 
   function toggleAll() {
     if (allChecked) {
@@ -60,10 +63,11 @@
   }
 
   async function deleteSelected() {
+    const count = selected.size;
     for (const id of selected) await deleteFileRecord(id);
     records = records.filter(r => r.id === undefined || !selected.has(r.id));
     selected = new Set();
-    showToast(`${selected.size > 0 ? selected.size : '선택한'} 항목이 삭제되었습니다.`, 'info');
+    showToast(`${count}개 항목이 삭제되었습니다.`, 'info');
   }
 
   function download(r: FileRecord) {
@@ -71,11 +75,21 @@
     downloadFile(r.data, r.name, mime);
   }
 
+  /** Open .pkis-sig in verify page via sessionStorage */
   function verifyFile(r: FileRecord) {
-    const b64 = btoa(String.fromCharCode(...new Uint8Array(r.data)));
+    const bytes = new Uint8Array(r.data);
+    let bin = '';
+    for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
     sessionStorage.setItem('verify_sig_name', r.name);
-    sessionStorage.setItem('verify_sig_data', b64);
+    sessionStorage.setItem('verify_sig_data', btoa(bin));
     goto(base + '/file/verify');
+  }
+
+  /** Store file and navigate to encrypt page → decrypt tab auto-loaded */
+  async function decryptFile(r: FileRecord) {
+    const file = new File([r.data], r.name, { type: 'application/pkis' });
+    await storeLaunchedFile(file);
+    goto(base + '/file/encrypt');
   }
 
   function formatBytes(n: number): string {
@@ -100,7 +114,7 @@
 <svelte:head><title>파일 목록 — KeyID</title></svelte:head>
 
 <div class="flex flex-col h-screen overflow-hidden">
-  <!-- Top bar — Docker Desktop style -->
+  <!-- Top bar -->
   <div class="flex items-center justify-between px-6 py-4" style="border-bottom:1px solid var(--border)">
     <div class="flex items-center gap-3">
       <h1 class="text-xl font-bold" style="color:var(--text)">파일 목록</h1>
@@ -132,63 +146,68 @@
     </div>
   </div>
 
-  <!-- Usage bar (Docker style) -->
+  <!-- Usage bar -->
   <div class="flex items-center gap-4 px-6 py-2.5 text-xs" style="border-bottom:1px solid var(--border);background:rgba(0,0,0,0.15)">
-    <!-- Mini bar chart -->
     <div class="flex items-center gap-2">
       <div class="w-28 h-1.5 rounded-full overflow-hidden" style="background:rgba(255,255,255,0.1)">
         {#if records.length > 0}
-          {@const signedPct = (records.filter(r=>r.type==='signed').length / records.length) * 100}
+          {@const sPct = (signedCount / records.length) * 100}
+          {@const ePct = (encryptedCount / records.length) * 100}
           <div class="flex h-full">
-            <div class="h-full" style="width:{signedPct}%;background:#3b82f6"></div>
-            <div class="h-full flex-1" style="background:#a855f7"></div>
+            <div class="h-full" style="width:{sPct}%;background:#3b82f6"></div>
+            <div class="h-full" style="width:{ePct}%;background:#a855f7"></div>
+            <div class="h-full flex-1" style="background:#f59e0b"></div>
           </div>
         {:else}
           <div class="h-full w-full" style="background:rgba(255,255,255,0.1)"></div>
         {/if}
       </div>
       <span style="color:var(--text-muted)">
-        <span style="color:#93c5fd">서명 {records.filter(r=>r.type==='signed').length}</span>
+        <span style="color:#93c5fd">서명 {signedCount}</span>
         <span class="mx-1" style="color:var(--border-mid)">·</span>
-        <span style="color:#c084fc">암호화 {records.filter(r=>r.type==='encrypted').length}</span>
+        <span style="color:#c084fc">암호화 {encryptedCount}</span>
+        {#if gatedCount > 0}
+          <span class="mx-1" style="color:var(--border-mid)">·</span>
+          <span style="color:#fbbf24">승인필요 {gatedCount}</span>
+        {/if}
       </span>
     </div>
-    <span class="ml-auto" style="color:var(--text-muted)">마지막 업데이트: {records.length > 0 ? relativeTime(records[0]?.createdAt ?? '') : '—'}</span>
-    <button class="btn-icon w-6 h-6" title="새로고침" on:click={async () => { loading = true; records = await getAllFileRecords(); loading = false; }}>
+    <span class="ml-auto" style="color:var(--text-muted)">
+      {records.length > 0 ? relativeTime(records[0]?.createdAt ?? '') : '—'}
+    </span>
+    <button class="btn-icon w-6 h-6" title="새로고침"
+      on:click={async () => { loading = true; records = await getAllFileRecords(); loading = false; }}>
       <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
       </svg>
     </button>
   </div>
 
-  <!-- Filter + search bar -->
-  <div class="flex items-center gap-3 px-6 py-3" style="border-bottom:1px solid var(--border)">
-    <!-- Search -->
+  <!-- Filter + search -->
+  <div class="flex items-center gap-3 px-6 py-3 flex-wrap" style="border-bottom:1px solid var(--border)">
     <div class="relative">
-      <svg class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style="color:var(--text-muted)" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <svg class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style="color:var(--text-muted)"
+        fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
       </svg>
       <input
-        class="pl-8 pr-10 py-1.5 rounded-lg text-xs w-64"
+        class="pl-8 pr-3 py-1.5 rounded-lg text-xs w-52"
         style="background:rgba(255,255,255,0.06);border:1px solid var(--border);color:var(--text)"
-        type="text"
-        placeholder="파일명 검색…"
-        bind:value={search}
+        type="text" placeholder="파일명 검색…" bind:value={search}
       />
     </div>
 
-    <!-- Divider -->
     <div class="w-px h-5" style="background:var(--border)"></div>
 
-    <!-- Filter toggles — Docker filter icon style -->
     <div class="flex items-center gap-1">
-      {#each [['all','전체'],['signed','서명됨'],['encrypted','암호화됨']] as [val, label]}
+      {#each [['all','전체'],['signed','서명됨'],['encrypted','암호화됨'],['gated','승인필요']] as [val, label]}
         <button
           class="px-2.5 py-1 rounded text-xs font-medium transition"
           style="
-            background: {filter === val ? 'rgba(29,110,245,0.2)' : 'transparent'};
-            color: {filter === val ? '#93c5fd' : 'var(--text-muted)'};
-            border: 1px solid {filter === val ? 'rgba(29,110,245,0.4)' : 'transparent'};
+            background:{filter === val ? 'rgba(29,110,245,0.2)' : 'transparent'};
+            color:{filter === val ? '#93c5fd' : 'var(--text-muted)'};
+            border:1px solid {filter === val ? 'rgba(29,110,245,0.4)' : 'transparent'};
           "
           on:click={() => setFilter(val)}
         >{label}</button>
@@ -198,7 +217,8 @@
     {#if selected.size > 0}
       <div class="ml-auto flex items-center gap-2">
         <span class="text-xs" style="color:var(--text-muted)">{selected.size}개 선택됨</span>
-        <button class="text-xs px-2.5 py-1 rounded transition" style="background:rgba(220,38,38,0.15);color:#f87171;border:1px solid rgba(220,38,38,0.3)"
+        <button class="text-xs px-2.5 py-1 rounded transition"
+          style="background:rgba(220,38,38,0.15);color:#f87171;border:1px solid rgba(220,38,38,0.3)"
           on:click={deleteSelected}>
           삭제
         </button>
@@ -210,8 +230,10 @@
   <div class="flex-1 overflow-y-auto">
     {#if loading}
       <div class="flex items-center justify-center py-20">
-        <div class="w-6 h-6 rounded-full border-2 border-t-transparent animate-spin" style="border-color:#1d6ef5;border-top-color:transparent"></div>
+        <div class="w-6 h-6 rounded-full border-2 border-t-transparent animate-spin"
+          style="border-color:#1d6ef5;border-top-color:transparent"></div>
       </div>
+
     {:else if filtered.length === 0}
       <div class="flex flex-col items-center justify-center py-20 text-center">
         <svg class="w-14 h-14 mb-4" style="color:var(--text-dim)" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -229,12 +251,15 @@
           </div>
         {/if}
       </div>
+
     {:else}
-      <!-- Column header — 5-col grid: check | name | type | size/created | actions -->
+      <!-- Column header -->
       <div class="grid gap-4 px-6 py-2.5 text-xs font-semibold uppercase tracking-widest select-none"
-        style="grid-template-columns:2rem 1fr 8rem 10rem 7rem;color:var(--text-muted);border-bottom:1px solid var(--border);background:rgba(0,0,0,0.2)">
-        <div><input type="checkbox" class="w-3.5 h-3.5 rounded" checked={allChecked} on:change={toggleAll}
-          style="accent-color:#1d6ef5" /></div>
+        style="grid-template-columns:2rem 1fr 9rem 10rem 8rem;color:var(--text-muted);border-bottom:1px solid var(--border);background:rgba(0,0,0,0.2)">
+        <div>
+          <input type="checkbox" class="w-3.5 h-3.5 rounded" checked={allChecked} on:change={toggleAll}
+            style="accent-color:#1d6ef5" />
+        </div>
         <div>이름</div>
         <div>유형</div>
         <div>생성일 · 크기</div>
@@ -246,7 +271,7 @@
         <div
           class="grid gap-4 px-6 py-3 items-center cursor-default"
           style="
-            grid-template-columns:2rem 1fr 8rem 10rem 7rem;
+            grid-template-columns:2rem 1fr 9rem 10rem 8rem;
             border-bottom:1px solid var(--border);
             background:{isSelected ? 'rgba(29,110,245,0.08)' : 'transparent'};
             transition:background 0.1s;
@@ -261,11 +286,17 @@
 
           <!-- Name + meta -->
           <div class="min-w-0">
-            <div class="text-sm font-medium truncate" style="color:var(--text)">
-              {record.name}
+            <div class="flex items-center gap-1.5">
+              <span class="text-sm font-medium truncate" style="color:var(--text)">{record.name}</span>
+              {#if record.viewerOnly}
+                <span class="flex-shrink-0 text-xs px-1.5 py-0.5 rounded"
+                  style="background:rgba(99,102,241,0.15);color:#818cf8;border:1px solid rgba(99,102,241,0.25)">
+                  뷰어전용
+                </span>
+              {/if}
             </div>
             <div class="text-xs truncate mt-0.5" style="color:var(--text-muted)">
-              원본: {record.originalName}
+              {record.originalName}
               {#if record.signerName}
                 &nbsp;·&nbsp;<span style="color:#60a5fa">{record.signerName}</span>
               {/if}
@@ -285,6 +316,15 @@
                 </svg>
                 서명됨
               </span>
+            {:else if record.type === 'gated'}
+              <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium"
+                style="background:rgba(245,158,11,0.15);color:#fbbf24;border:1px solid rgba(245,158,11,0.3)">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+                </svg>
+                승인필요
+              </span>
             {:else}
               <span class="badge-encrypted gap-1">
                 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -302,9 +342,10 @@
             <div class="text-xs font-mono mt-0.5" style="color:var(--text-muted)">{formatBytes(record.size)}</div>
           </div>
 
-          <!-- Action buttons — Docker Desktop icon row -->
+          <!-- Actions -->
           <div class="flex items-center justify-end gap-0.5">
             {#if record.type === 'signed'}
+              <!-- Verify signature -->
               <button class="btn-icon w-7 h-7 rounded" title="서명 검증"
                 style="color:#60a5fa" on:click={() => verifyFile(record)}>
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -312,9 +353,33 @@
                     d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
                 </svg>
               </button>
+
+            {:else if record.type === 'gated'}
+              <!-- Decrypt gated (approval-gated) -->
+              <button class="btn-icon w-7 h-7 rounded" title="복호화 (승인 필요)"
+                style="color:#fbbf24" on:click={() => decryptFile(record)}>
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+                </svg>
+              </button>
+
+            {:else if record.viewerOnly}
+              <!-- Viewer-only: decrypt → auto-open viewer -->
+              <button class="btn-icon w-7 h-7 rounded" title="보안 뷰어로 열기"
+                style="color:#818cf8" on:click={() => decryptFile(record)}>
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+                </svg>
+              </button>
+
             {:else}
+              <!-- Normal decrypt -->
               <button class="btn-icon w-7 h-7 rounded" title="복호화"
-                style="color:#c084fc" on:click={() => goto(base + '/file/encrypt')}>
+                style="color:#c084fc" on:click={() => decryptFile(record)}>
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                     d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"/>
@@ -322,13 +387,15 @@
               </button>
             {/if}
 
-            <button class="btn-icon w-7 h-7 rounded" title="다운로드" on:click={() => download(record)}>
+            <!-- Download (always available — this is the encrypted/signed PKIS file) -->
+            <button class="btn-icon w-7 h-7 rounded" title="다운로드 (.pkis)" on:click={() => download(record)}>
               <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                   d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
               </svg>
             </button>
 
+            <!-- Delete -->
             <button class="btn-icon delete-btn w-7 h-7 rounded" title="삭제"
               on:click={() => deleteRecord(record.id)}>
               <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -340,9 +407,8 @@
         </div>
       {/each}
 
-      <!-- Footer row -->
       <div class="px-6 py-2 text-xs text-right" style="color:var(--text-muted)">
-        Showing {filtered.length} items
+        {filtered.length}개 표시됨
       </div>
     {/if}
   </div>

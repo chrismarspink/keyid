@@ -75,6 +75,8 @@ export interface FileRecord {
   signerName?: string;
   /** Number of recipients (encrypted files) */
   recipientCount?: number;
+  /** If true, recipient may only view in the built-in viewer (no file save) */
+  viewerOnly?: boolean;
   /** The actual file data for download */
   data: ArrayBuffer;
 }
