@@ -45,11 +45,13 @@ export interface VerifyResult {
   message?: string;
   error?: string;
   /**
-   * true  = original file provided and its SHA-256 matches the stored messageDigest
-   * false = original file provided but hash does NOT match (tampered)
-   * undefined = original file was not provided; content integrity not checked
+   * true  = file hash verified (either from embedded content or provided original)
+   * false = hash mismatch (tampered)
+   * undefined = detached sig and no original file provided
    */
   contentIntegrityVerified?: boolean;
+  /** true if the original file content is embedded inside the signature (p7m-style) */
+  embedded?: boolean;
 }
 
 // ─── Sign ──────────────────────────────────────────────────────────────────
@@ -282,11 +284,27 @@ export async function verifySignature(
       );
     } catch { signatureValid = false; }
 
-    // ── Content integrity (only if original file provided) ────────────────
+    // ── Content integrity ─────────────────────────────────────────────────
     let contentIntegrityVerified: boolean | undefined;
-    let contentDigest = storedDigestHex; // default to stored digest for display
+    let contentDigest = storedDigestHex;
+    let embedded = false;
 
-    if (originalFile !== undefined) {
+    // Check for embedded content (p7m-style: eContent present in encapContentInfo)
+    const eContentObj = cmsSignedData.encapContentInfo?.eContent;
+    if (eContentObj) {
+      embedded = true;
+      try {
+        const contentHex = eContentObj.valueBlock?.valueHex as ArrayBuffer | undefined;
+        if (contentHex) {
+          const fileDigestBuf = await crypto.subtle.digest('SHA-256', contentHex);
+          const fileDigestHex = Array.from(new Uint8Array(fileDigestBuf))
+            .map(b => b.toString(16).padStart(2, '0')).join('');
+          contentDigest = fileDigestHex;
+          contentIntegrityVerified = (fileDigestHex === storedDigestHex) && storedDigestHex !== '';
+        }
+      } catch { /* leave contentIntegrityVerified undefined */ }
+    } else if (originalFile !== undefined) {
+      // Detached — check provided original file
       const fileDigestBuf = await crypto.subtle.digest('SHA-256', originalFile);
       const fileDigestHex = Array.from(new Uint8Array(fileDigestBuf))
         .map(b => b.toString(16).padStart(2, '0')).join('');
@@ -301,7 +319,8 @@ export async function verifySignature(
       contentDigest,
       signerFingerprint,
       message,
-      contentIntegrityVerified
+      contentIntegrityVerified,
+      embedded
     };
   } catch (e) {
     return { valid: false, signerCommonName: 'Unknown', contentDigest: '', error: String(e) };
@@ -581,6 +600,8 @@ export interface PkisFile {
   approverName?: string;
   /** If true, recipient must use the built-in viewer; file download is blocked */
   viewerOnly?: boolean;
+  /** If true, original file content is embedded inside the signature (p7m-style) */
+  embedded?: boolean;
 }
 
 const MAGIC = new TextEncoder().encode('PKIS');
@@ -592,7 +613,7 @@ export function packPkisFile(
   filename?: string,
   mimeType?: string,
   message?: string,
-  extra?: { requestId?: string; requesterCert?: string; approverId?: string; approverName?: string; viewerOnly?: boolean }
+  extra?: { requestId?: string; requesterCert?: string; approverId?: string; approverName?: string; viewerOnly?: boolean; embedded?: boolean }
 ): ArrayBuffer {
   const typeMap: Record<PkisFile['type'], number> = {
     signed: 0x01, encrypted: 0x02, cert: 0x03, request: 0x04, key: 0x05,
@@ -607,7 +628,8 @@ export function packPkisFile(
     rc: extra?.requesterCert ?? '',
     aid: extra?.approverId ?? '',
     an: extra?.approverName ?? '',
-    vo: extra?.viewerOnly ? 1 : 0
+    vo: extra?.viewerOnly ? 1 : 0,
+    emb: extra?.embedded ? 1 : 0
   });
   const metaBytes = new TextEncoder().encode(meta);
   const metaLen = new DataView(new ArrayBuffer(4));
@@ -897,6 +919,7 @@ export function unpackPkisFile(raw: ArrayBuffer): PkisFile {
     requesterCert: meta.rc || undefined,
     approverId: meta.aid || undefined,
     approverName: meta.an || undefined,
-    viewerOnly: meta.vo === 1 ? true : undefined
+    viewerOnly: meta.vo === 1 ? true : undefined,
+    embedded: meta.emb === 1 ? true : undefined
   };
 }

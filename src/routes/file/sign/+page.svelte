@@ -23,6 +23,8 @@
 
   // Operation mode
   let mode: 'sign' | 'sign-encrypt' | 'request' = 'sign';
+  // Signature type (only applies to mode === 'sign')
+  let sigMode: 'detached' | 'embedded' = 'detached';
 
   // Signer
   let signerMode: 'current' | 'archived' = 'current';
@@ -180,25 +182,49 @@
       const baseName = selectedFile.name.replace(/\.[^.]+$/, '');
 
       if (mode === 'sign') {
-        const result = await signData(fileData, privateKey, certDer, msg);
+        if (sigMode === 'embedded') {
+          // p7m-style: original file embedded inside the signature
+          const result = await signDataEmbedded(fileData, privateKey, certDer, msg);
 
-        if (addCosigner && cosignerContactId !== null) {
-          pendingSignedDataDer = result.der;
-          pendingOutputName = `${baseName}.pkis-sig`;
-          pendingRecipients = [];
-          await startCosignRequest(fileData);
-          return;
+          if (addCosigner && cosignerContactId !== null) {
+            pendingSignedDataDer = result.der;
+            pendingOutputName = `${baseName}.pkis-sig`;
+            pendingRecipients = [];
+            await startCosignRequest(fileData);
+            return;
+          }
+
+          const packed = packPkisFile('signed', result.der, selectedFile.name, selectedFile.type, msg, { embedded: true });
+          const sigFileName = `${baseName}.pkis-sig`;
+          downloadFile(packed, sigFileName, 'application/pkis-sig');
+          await saveFileRecord({
+            name: sigFileName, originalName: selectedFile.name, type: 'signed',
+            size: packed.byteLength, createdAt: new Date().toISOString(),
+            signerName, embedded: true, data: packed
+          });
+          signResult = { fileName: selectedFile.name, sigFile: sigFileName, signerName, mode: '포함 서명' };
+        } else {
+          // p7s-style: detached signature, original file separate
+          const result = await signData(fileData, privateKey, certDer, msg);
+
+          if (addCosigner && cosignerContactId !== null) {
+            pendingSignedDataDer = result.der;
+            pendingOutputName = `${baseName}.pkis-sig`;
+            pendingRecipients = [];
+            await startCosignRequest(fileData);
+            return;
+          }
+
+          const packed = packPkisFile('signed', result.der, selectedFile.name, selectedFile.type, msg);
+          const sigFileName = `${baseName}.pkis-sig`;
+          downloadFile(packed, sigFileName, 'application/pkis-sig');
+          await saveFileRecord({
+            name: sigFileName, originalName: selectedFile.name, type: 'signed',
+            size: packed.byteLength, createdAt: new Date().toISOString(),
+            signerName, data: packed
+          });
+          signResult = { fileName: selectedFile.name, sigFile: sigFileName, signerName, mode: '서명' };
         }
-
-        const packed = packPkisFile('signed', result.der, selectedFile.name, selectedFile.type, msg);
-        const sigFileName = `${baseName}.pkis-sig`;
-        downloadFile(packed, sigFileName, 'application/pkis-sig');
-        await saveFileRecord({
-          name: sigFileName, originalName: selectedFile.name, type: 'signed',
-          size: packed.byteLength, createdAt: new Date().toISOString(),
-          signerName, data: packed
-        });
-        signResult = { fileName: selectedFile.name, sigFile: sigFileName, signerName, mode: '서명' };
       } else {
         // sign + encrypt
         const recipientCerts: ArrayBuffer[] = [];
@@ -446,7 +472,9 @@
         <div class="text-xs mt-0.5" style="color:var(--text-dim)">→ {signResult.sigFile} 다운로드됨</div>
       </div>
       {#if signResult.mode === '서명'}
-        <p class="text-sm" style="color:var(--text-muted)">서명 파일과 원본 파일을 함께 상대방에게 전달하세요.</p>
+        <p class="text-sm" style="color:var(--text-muted)">서명 파일(.pkis-sig)과 원본 파일을 함께 상대방에게 전달하세요.</p>
+      {:else if signResult.mode === '포함 서명'}
+        <p class="text-sm" style="color:var(--text-muted)">서명 파일(.pkis-sig) 하나만 전달하세요. 원본이 내장되어 있습니다.</p>
       {/if}
       <div class="flex gap-3">
         <button on:click={reset} class="btn-secondary flex-1">다른 파일</button>
@@ -604,7 +632,7 @@
 
   {:else}
     <!-- ── Mode tabs ── -->
-    <div class="flex gap-1 p-1 rounded-xl mb-5" style="background:var(--bg-panel);max-width:360px">
+    <div class="flex gap-1 p-1 rounded-xl mb-3" style="background:var(--bg-panel);max-width:360px">
       {#each [['sign','서명만'],['sign-encrypt','서명+암호화'],['request','서명 요청']] as [m, label]}
         <button
           class="flex-1 py-2 rounded-lg text-sm font-medium transition"
@@ -613,6 +641,32 @@
         >{label}</button>
       {/each}
     </div>
+
+    <!-- ── Signature type (detached vs embedded, only for sign mode) ── -->
+    {#if mode === 'sign'}
+      <div class="flex gap-2 mb-5" style="max-width:360px">
+        <button
+          class="flex-1 py-2 px-3 rounded-xl text-xs font-medium transition text-left"
+          style={sigMode === 'detached'
+            ? 'background:rgba(59,130,246,0.15);border:1px solid rgba(59,130,246,0.4);color:#93c5fd'
+            : 'background:var(--bg-panel);border:1px solid var(--border);color:var(--text-muted)'}
+          on:click={() => (sigMode = 'detached')}
+        >
+          <div class="font-semibold">분리 서명 (p7s)</div>
+          <div class="text-xs opacity-75 mt-0.5">서명+원본 파일 각각 전달</div>
+        </button>
+        <button
+          class="flex-1 py-2 px-3 rounded-xl text-xs font-medium transition text-left"
+          style={sigMode === 'embedded'
+            ? 'background:rgba(59,130,246,0.15);border:1px solid rgba(59,130,246,0.4);color:#93c5fd'
+            : 'background:var(--bg-panel);border:1px solid var(--border);color:var(--text-muted)'}
+          on:click={() => (sigMode = 'embedded')}
+        >
+          <div class="font-semibold">포함 서명 (p7m)</div>
+          <div class="text-xs opacity-75 mt-0.5">원본 파일 내장, 서명만 전달</div>
+        </button>
+      </div>
+    {/if}
 
     <!-- ── Two-column grid on desktop ── -->
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">

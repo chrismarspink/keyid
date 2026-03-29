@@ -272,6 +272,12 @@
                   뷰어전용
                 </span>
               {/if}
+              {#if record.embedded}
+                <span class="text-xs px-1.5 py-0.5 rounded flex-shrink-0"
+                  style="background:rgba(139,92,246,0.15);color:#a78bfa;border:1px solid rgba(139,92,246,0.25)">
+                  내장서명
+                </span>
+              {/if}
             </div>
 
             <div class="text-xs mt-0.5 flex items-center gap-1.5 flex-wrap" style="color:var(--text-muted)">
@@ -280,6 +286,10 @@
               <span>{relativeTime(record.createdAt)}</span>
               <span style="color:var(--border-mid)">·</span>
               <span class="font-mono">{formatBytes(record.size)}</span>
+              {#if record.signerName}
+                <span style="color:var(--border-mid)">·</span>
+                <span style="color:#93c5fd">{record.signerName}</span>
+              {/if}
               {#if record.recipientCount}
                 <span style="color:var(--border-mid)">·</span>
                 <span>수신자 {record.recipientCount}명</span>

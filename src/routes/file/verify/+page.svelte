@@ -14,6 +14,20 @@
   let origDropActive = false;
   let sigInput: HTMLInputElement;
   let origInput: HTMLInputElement;
+  // Detected from PKIS meta before verify
+  let isEmbedded = false;
+
+  // Detect embedded flag whenever sigFile changes
+  $: if (sigFile) {
+    sigFile.arrayBuffer().then(buf => {
+      try {
+        const pkis = unpackPkisFile(buf);
+        isEmbedded = pkis.embedded === true;
+      } catch { isEmbedded = false; }
+    });
+  } else {
+    isEmbedded = false;
+  }
 
   type VerifyState = 'idle' | 'verifying' | 'valid' | 'valid-no-content' | 'invalid' | 'error';
   let state: VerifyState = 'idle';
@@ -28,6 +42,7 @@
     message?: string;
     isArchivedSigner: boolean;
     contentIntegrityVerified?: boolean;
+    embedded?: boolean;
   }
   let verifyResult: VerifyDisplayResult | null = null;
   let errorMsg = '';
@@ -119,8 +134,12 @@
         digest: result.contentDigest,
         message: result.message || containerMsg,
         isArchivedSigner,
-        contentIntegrityVerified: result.contentIntegrityVerified
+        contentIntegrityVerified: result.contentIntegrityVerified,
+        embedded: result.embedded
       };
+
+      // Update isEmbedded from actual verify result
+      if (result.embedded) isEmbedded = true;
 
       if (!result.valid) {
         state = 'invalid';
@@ -209,6 +228,13 @@
               <span class="text-xs px-2 py-0.5 rounded-full font-medium"
                 style="background:rgba(245,158,11,0.15);color:#fbbf24;border:1px solid rgba(245,158,11,0.3)">
                 내용 미확인
+              </span>
+            {/if}
+            <!-- Embedded badge -->
+            {#if verifyResult?.embedded}
+              <span class="text-xs px-2 py-0.5 rounded-full font-medium"
+                style="background:rgba(99,102,241,0.15);color:#818cf8;border:1px solid rgba(99,102,241,0.25)">
+                원본 내장 (p7m)
               </span>
             {/if}
           </div>
@@ -380,15 +406,30 @@
       {/if}
     </div>
 
-    <!-- Original file (optional) -->
-    <div class="panel mb-5">
+    <!-- Original file (optional for detached, disabled for embedded) -->
+    <div class="panel mb-5" style={isEmbedded ? 'opacity:0.5;pointer-events:none' : ''}>
       <div class="flex items-center gap-2 mb-3">
         <h2 class="text-sm font-semibold" style="color:var(--text)">원본 파일</h2>
-        <span class="text-xs px-1.5 py-0.5 rounded" style="background:rgba(255,255,255,0.06);color:var(--text-dim)">
-          선택 사항
-        </span>
+        {#if isEmbedded}
+          <span class="text-xs px-1.5 py-0.5 rounded"
+            style="background:rgba(99,102,241,0.15);color:#818cf8;border:1px solid rgba(99,102,241,0.25)">
+            원본 내장됨 (p7m)
+          </span>
+        {:else}
+          <span class="text-xs px-1.5 py-0.5 rounded" style="background:rgba(255,255,255,0.06);color:var(--text-dim)">
+            선택 사항
+          </span>
+        {/if}
       </div>
-      {#if !originalFile}
+      {#if isEmbedded}
+        <div class="flex items-center gap-3 p-3 rounded-xl text-sm" style="background:rgba(99,102,241,0.08);color:#818cf8">
+          <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+          </svg>
+          포함 서명 파일입니다. 원본이 서명 안에 내장되어 있어 별도 제공이 불필요합니다.
+        </div>
+      {:else if !originalFile}
         <!-- svelte-ignore a11y-no-static-element-interactions -->
         <div
           class="border-2 border-dashed rounded-xl py-8 px-6 text-center cursor-pointer transition"
@@ -439,7 +480,7 @@
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
             d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
         </svg>
-        {originalFile ? '서명 + 내용 무결성 검증' : '서명 검증'}
+        {isEmbedded ? '서명 + 내용 무결성 검증' : originalFile ? '서명 + 내용 무결성 검증' : '서명 검증'}
       {/if}
     </button>
   {/if}

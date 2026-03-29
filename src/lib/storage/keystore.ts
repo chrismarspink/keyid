@@ -77,6 +77,8 @@ export interface FileRecord {
   recipientCount?: number;
   /** If true, recipient may only view in the built-in viewer (no file save) */
   viewerOnly?: boolean;
+  /** If true, original file is embedded inside the signature (p7m-style, no separate original needed) */
+  embedded?: boolean;
   /** The actual file data for download */
   data: ArrayBuffer;
 }
