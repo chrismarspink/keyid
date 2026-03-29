@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import { goto } from '$app/navigation';
   import { base } from '$app/paths';
   import { pendingViewerFiles, type ViewerFile } from '$lib/viewerStore';
@@ -10,16 +10,15 @@
   let files: ViewerFile[] = [];
   let selected: ViewerFile | null = null;
   let canvas: HTMLCanvasElement;
-  let container: HTMLDivElement;
   let currentPage = 1;
   let totalPages = 0;
-  let loading = false;
+  let initLoading = false;   // while PDF is being parsed
+  let pageLoading = false;   // while a page is being rendered
   let error = '';
   let pdfDoc: unknown = null;
   let watermarkName = '';
   let scale = 1.5;
 
-  // Subscribe to store
   const unsub = pendingViewerFiles.subscribe(v => { files = v; });
 
   onMount(async () => {
@@ -34,13 +33,11 @@
       await openFile(files[0]);
     }
 
-    // Disable right-click on the whole page
     document.addEventListener('contextmenu', blockCtx);
   });
 
   onDestroy(() => {
     document.removeEventListener('contextmenu', blockCtx);
-    // Clear memory
     pendingViewerFiles.set([]);
     unsub();
   });
@@ -53,7 +50,7 @@
     totalPages = 0;
     pdfDoc = null;
     error = '';
-    loading = true;
+    initLoading = true;
 
     try {
       const pdfjsLib = await import('pdfjs-dist');
@@ -62,17 +59,21 @@
       const loadingTask = pdfjsLib.getDocument({ data: file.data.slice() });
       pdfDoc = await loadingTask.promise;
       totalPages = (pdfDoc as { numPages: number }).numPages;
+
+      // Turn off initLoading so the canvas enters the DOM, then wait for DOM update
+      initLoading = false;
+      await tick();
+
       await renderPage(currentPage);
     } catch (e) {
       error = 'PDF를 열 수 없습니다: ' + String(e);
-    } finally {
-      loading = false;
+      initLoading = false;
     }
   }
 
   async function renderPage(pageNum: number) {
     if (!pdfDoc || !canvas) return;
-    loading = true;
+    pageLoading = true;
     try {
       const page = await (pdfDoc as { getPage(n: number): Promise<unknown> }).getPage(pageNum);
       const viewport = (page as { getViewport(o: { scale: number }): { width: number; height: number } })
@@ -86,10 +87,9 @@
         render(o: { canvasContext: CanvasRenderingContext2D; viewport: unknown }): { promise: Promise<void> }
       }).render({ canvasContext: ctx, viewport }).promise;
 
-      // Draw watermark
       drawWatermark(ctx, canvas.width, canvas.height);
     } finally {
-      loading = false;
+      pageLoading = false;
     }
   }
 
@@ -133,7 +133,6 @@
 
 <svelte:head>
   <title>문서 뷰어 — KeyID</title>
-  <!-- Prevent print -->
   <style>@media print { body { display: none !important; } }</style>
 </svelte:head>
 
@@ -197,19 +196,21 @@
   {:else}
     <!-- PDF canvas area -->
     <div
-      bind:this={container}
       class="flex-1 overflow-auto flex flex-col items-center py-4 px-2"
       style="user-select:none; -webkit-user-select:none"
     >
-      {#if loading}
+      {#if initLoading}
+        <!-- Initial PDF parse spinner -->
         <div class="flex items-center justify-center h-64">
           <div class="w-8 h-8 rounded-full border-2 border-t-transparent animate-spin" style="border-color:#1d6ef5; border-top-color:transparent"></div>
         </div>
+
       {:else if error}
         <div class="p-4 rounded-xl text-sm max-w-sm mx-auto text-center" style="background:rgba(239,68,68,0.1); color:#f87171">
           {error}
         </div>
-      {:else}
+
+      {:else if pdfDoc}
         <!-- Security notice -->
         <div class="text-xs mb-3 flex items-center gap-1.5" style="color:var(--text-dim)">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -219,10 +220,18 @@
           메모리 전용 · 워터마크 적용 · 저장 불가
         </div>
 
-        <canvas
-          bind:this={canvas}
-          style="max-width:100%; box-shadow:0 4px 32px rgba(0,0,0,0.5); border-radius:4px"
-        ></canvas>
+        <!-- Canvas wrapper: always in DOM once pdfDoc is set -->
+        <div class="relative">
+          {#if pageLoading}
+            <div class="absolute inset-0 flex items-center justify-center" style="background:rgba(15,21,32,0.5); z-index:1">
+              <div class="w-6 h-6 rounded-full border-2 border-t-transparent animate-spin" style="border-color:#1d6ef5; border-top-color:transparent"></div>
+            </div>
+          {/if}
+          <canvas
+            bind:this={canvas}
+            style="max-width:100%; box-shadow:0 4px 32px rgba(0,0,0,0.5); border-radius:4px; display:block"
+          ></canvas>
+        </div>
       {/if}
     </div>
 
