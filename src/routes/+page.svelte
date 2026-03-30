@@ -42,6 +42,77 @@
   let avatarDataUrl = '';
   let avatarInput: HTMLInputElement;
 
+  // ── Business card scan ──────────────────────────────────────────
+  let scanMode: 'manual' | 'card' = 'manual';
+  let cardStep: 'capture' | 'processing' | 'review' = 'capture';
+  let cardInput: HTMLInputElement;
+  let cardImageFile: File | null = null;
+  let cardPreviewUrl = '';
+  let cardCroppedUrl = '';       // data URL used for avatar
+  let cardOcrStage = '';
+  let cardOcrPct = 0;
+  let cardError = '';
+  let cardParsed = { name: '', email: '', phone: '', organization: '' };
+
+  async function processCard() {
+    if (!cardImageFile) return;
+    cardError = '';
+    cardStep = 'processing';
+    cardOcrStage = '이미지 로드 중…';
+    cardOcrPct = 0;
+
+    try {
+      // Load image
+      const img = new Image();
+      await new Promise<void>((res, rej) => {
+        img.onload = () => res();
+        img.onerror = () => rej(new Error('이미지 로드 실패'));
+        img.src = cardPreviewUrl;
+      });
+
+      // 1. Perspective crop (best-effort via jscanify/OpenCV)
+      cardOcrStage = '이미지 보정 중…';
+      cardOcrPct = 5;
+      const { cropCard, runOCR, parseBizCard } = await import('$lib/cardocr');
+      const canvas = await cropCard(img);
+      cardCroppedUrl = canvas.toDataURL('image/jpeg', 0.85);
+
+      // 2. OCR
+      const text = await runOCR(canvas, (stage, pct) => {
+        cardOcrStage = stage;
+        cardOcrPct = pct;
+      });
+
+      // 3. Parse
+      cardParsed = parseBizCard(text);
+      cardStep = 'review';
+    } catch (e) {
+      cardError = e instanceof Error ? e.message : String(e);
+      cardStep = 'capture';
+    }
+  }
+
+  function applyCardData() {
+    form.commonName  = cardParsed.name         || form.commonName;
+    form.email       = cardParsed.email        || form.email;
+    form.phone       = cardParsed.phone        || form.phone;
+    form.organization = cardParsed.organization || form.organization;
+    // Use (cropped) card image as avatar
+    avatarDataUrl = cardCroppedUrl || cardPreviewUrl;
+    scanMode = 'manual';
+    cardStep = 'capture';
+  }
+
+  function resetCardScan() {
+    cardStep = 'capture';
+    cardImageFile = null;
+    if (cardPreviewUrl) URL.revokeObjectURL(cardPreviewUrl);
+    cardPreviewUrl = '';
+    cardCroppedUrl = '';
+    cardError = '';
+    cardParsed = { name: '', email: '', phone: '', organization: '' };
+  }
+
   async function resizeAvatar(file: File): Promise<string> {
     return new Promise((resolve) => {
       const img = new Image();
@@ -337,6 +408,136 @@
         <p class="text-gray-500 mt-2">나만의 디지털 신원 인증서를 만드세요.</p>
       </div>
 
+      <!-- Mode toggle -->
+      <div class="flex gap-1 mb-4 rounded-xl p-1" style="background:var(--bg-panel)">
+        <button
+          class="flex-1 py-2 rounded-lg text-sm font-medium transition"
+          style={scanMode === 'manual'
+            ? 'background:var(--bg-input);color:var(--text)'
+            : 'color:var(--text-muted)'}
+          on:click={() => { scanMode = 'manual'; }}
+        >직접 입력</button>
+        <button
+          class="flex-1 py-2 rounded-lg text-sm font-medium transition flex items-center justify-center gap-1.5"
+          style={scanMode === 'card'
+            ? 'background:var(--bg-input);color:var(--text)'
+            : 'color:var(--text-muted)'}
+          on:click={() => { scanMode = 'card'; }}
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
+          </svg>
+          명함 스캔
+        </button>
+      </div>
+
+      {#if scanMode === 'card'}
+        <!-- ── Card scan UI ── -->
+        <div class="panel space-y-4">
+          {#if cardStep === 'capture'}
+            <div class="text-center">
+              <p class="text-sm mb-4" style="color:var(--text-muted)">명함 사진을 찍거나 이미지를 선택하세요</p>
+
+              {#if cardImageFile && cardPreviewUrl}
+                <div class="mb-4 rounded-xl overflow-hidden border" style="border-color:var(--border)">
+                  <img src={cardPreviewUrl} alt="명함 미리보기" class="w-full object-contain max-h-48" />
+                </div>
+                {#if cardError}
+                  <p class="text-sm text-red-500 mb-3">{cardError}</p>
+                {/if}
+                <div class="flex gap-3">
+                  <button class="btn-secondary flex-1 text-sm" on:click={resetCardScan}>다시 선택</button>
+                  <button class="btn-primary flex-1 text-sm" on:click={processCard}>스캔 시작</button>
+                </div>
+              {:else}
+                <button
+                  class="w-full border-2 border-dashed rounded-xl py-10 px-4 flex flex-col items-center gap-3 transition"
+                  style="border-color:var(--border-mid); color:var(--text-muted)"
+                  on:click={() => cardInput.click()}
+                >
+                  <svg class="w-12 h-12 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                      d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
+                  </svg>
+                  <span class="text-sm font-medium">명함 이미지 선택</span>
+                  <span class="text-xs opacity-60">카메라 촬영 또는 갤러리에서 선택</span>
+                </button>
+                <input
+                  bind:this={cardInput}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  class="hidden"
+                  on:change={(e) => {
+                    const f = e.currentTarget.files?.[0];
+                    if (!f) return;
+                    cardImageFile = f;
+                    if (cardPreviewUrl) URL.revokeObjectURL(cardPreviewUrl);
+                    cardPreviewUrl = URL.createObjectURL(f);
+                  }}
+                />
+              {/if}
+            </div>
+
+          {:else if cardStep === 'processing'}
+            <div class="text-center py-4 space-y-4">
+              <div class="w-12 h-12 rounded-full border-2 border-t-transparent animate-spin mx-auto"
+                style="border-color:var(--navy); border-top-color:transparent"></div>
+              <p class="text-sm font-medium" style="color:var(--text)">{cardOcrStage}</p>
+              <div class="rounded-full h-2 overflow-hidden" style="background:var(--bg-panel)">
+                <div
+                  class="h-full rounded-full transition-all duration-300"
+                  style="width:{cardOcrPct}%; background:var(--navy)"
+                ></div>
+              </div>
+              <p class="text-xs" style="color:var(--text-muted)">
+                처음 실행 시 언어 팩(~25MB)을 다운로드합니다. 이후에는 캐시에서 로드됩니다.
+              </p>
+            </div>
+
+          {:else if cardStep === 'review'}
+            {#if cardCroppedUrl}
+              <div class="rounded-xl overflow-hidden border mb-1" style="border-color:var(--border)">
+                <img src={cardCroppedUrl} alt="보정된 명함" class="w-full object-contain max-h-36" />
+              </div>
+              <p class="text-xs mb-3" style="color:var(--text-muted)">
+                * 이 이미지가 신원 로고타입으로 사용됩니다. 직접 수정 가능합니다.
+              </p>
+            {/if}
+            <div class="space-y-3">
+              <div>
+                <label class="label" for="cn-card">이름</label>
+                <input id="cn-card" class="input" type="text" bind:value={cardParsed.name} placeholder="인식 실패 시 직접 입력" />
+              </div>
+              <div>
+                <label class="label" for="email-card">이메일</label>
+                <input id="email-card" class="input" type="email" bind:value={cardParsed.email} placeholder="hong@example.com" />
+              </div>
+              <div>
+                <label class="label" for="phone-card">전화번호</label>
+                <input id="phone-card" class="input" type="tel" bind:value={cardParsed.phone} placeholder="010-1234-5678" />
+              </div>
+              <div>
+                <label class="label" for="org-card">소속 / 기관</label>
+                <input id="org-card" class="input" type="text" bind:value={cardParsed.organization} placeholder="회사명" />
+              </div>
+            </div>
+            <div class="flex gap-3 pt-1">
+              <button class="btn-secondary flex-1 text-sm" on:click={resetCardScan}>다시 스캔</button>
+              <button
+                class="btn-primary flex-1 text-sm"
+                disabled={!cardParsed.name.trim()}
+                on:click={applyCardData}
+              >이 정보로 시작</button>
+            </div>
+            {#if !cardParsed.name.trim()}
+              <p class="text-xs text-center" style="color:var(--text-muted)">이름을 입력해야 계속할 수 있습니다</p>
+            {/if}
+          {/if}
+        </div>
+      {:else}
+
       <div class="panel space-y-4">
         <!-- Avatar upload -->
         <div class="flex flex-col items-center gap-3 mb-4">
@@ -458,6 +659,7 @@
           </button>
         </div>
       </div>
+      {/if}<!-- end scanMode -->
     </div>
   </div>
 

@@ -32,10 +32,12 @@
     "@supabase/supabase-js": "^2.100.1",
     "asn1js": "^3.0.5",
     "bc-ur": "^0.1.6",
+    "jscanify": "^1.4.2",
     "jsqr": "^1.4.0",
     "pdfjs-dist": "^5.5.207",
     "pkijs": "^3.2.4",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "tesseract.js": "^7.0.0"
   },
   "type": "module"
 }
