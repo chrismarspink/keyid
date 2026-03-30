@@ -103,20 +103,32 @@ export async function runOCR(
 ): Promise<string> {
   onProgress?.('OCR 엔진 로드 중…', 3);
   const Tesseract = await loadTesseract();
-  onProgress?.('언어 팩 로드 중…', 10);
+  onProgress?.('언어 팩 다운로드 중… (최초 1회 ~5MB)', 8);
 
-  const worker = await Tesseract.createWorker('kor+eng', 1, {
-    logger: (m: { status: string; progress: number }) => {
-      const p = m.progress ?? 0;
-      if (m.status?.includes('load')) {
-        onProgress?.('언어 팩 로드 중…', 10 + Math.round(p * 20));
-      } else if (m.status?.includes('init')) {
-        onProgress?.('초기화 중…', 30 + Math.round(p * 10));
-      } else if (m.status?.includes('recogniz')) {
-        onProgress?.('텍스트 인식 중…', 40 + Math.round(p * 55));
+  // Use fast tessdata (~5 MB total) instead of best-quality (~14 MB)
+  // to avoid long first-load times on mobile connections.
+  const workerPromise = Tesseract.createWorker('kor+eng', 1, {
+    langPath: 'https://tessdata.projectnaptha.com/4.0.0_fast/',
+    logger: (m: any) => {
+      const p: number = m.progress ?? 0;
+      const s: string = m.status ?? '';
+      if (s.includes('load')) {
+        onProgress?.(`언어 팩 다운로드 중… ${Math.round(p * 100)}%`, 8 + Math.round(p * 42));
+      } else if (s.includes('init')) {
+        onProgress?.('엔진 초기화 중…', 50 + Math.round(p * 10));
+      } else if (s.includes('recogniz')) {
+        onProgress?.('텍스트 인식 중…', 60 + Math.round(p * 35));
       }
     }
   });
+
+  // 90-second hard timeout
+  const worker = await Promise.race([
+    workerPromise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('시간 초과 — 네트워크를 확인 후 다시 시도하세요')), 90_000)
+    )
+  ]);
 
   const { data: { text } } = await worker.recognize(source);
   await worker.terminate();

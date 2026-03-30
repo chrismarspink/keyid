@@ -52,6 +52,8 @@
   let cardOcrStage = '';
   let cardOcrPct = 0;
   let cardError = '';
+  let cardElapsed = 0;
+  let _cardTimer: ReturnType<typeof setInterval> | null = null;
   let cardParsed = { name: '', email: '', phone: '', organization: '' };
 
   async function processCard() {
@@ -60,6 +62,9 @@
     cardStep = 'processing';
     cardOcrStage = '이미지 로드 중…';
     cardOcrPct = 0;
+    cardElapsed = 0;
+    if (_cardTimer) clearInterval(_cardTimer);
+    _cardTimer = setInterval(() => { cardElapsed += 1; }, 1000);
 
     try {
       // Load image element
@@ -102,6 +107,8 @@
     } catch (e) {
       cardError = e instanceof Error ? e.message : String(e);
       cardStep = 'capture';
+    } finally {
+      if (_cardTimer) { clearInterval(_cardTimer); _cardTimer = null; }
     }
   }
 
@@ -117,12 +124,14 @@
   }
 
   function resetCardScan() {
+    if (_cardTimer) { clearInterval(_cardTimer); _cardTimer = null; }
     cardStep = 'capture';
     cardImageFile = null;
     if (cardPreviewUrl) URL.revokeObjectURL(cardPreviewUrl);
     cardPreviewUrl = '';
     cardCroppedUrl = '';
     cardError = '';
+    cardElapsed = 0;
     cardParsed = { name: '', email: '', phone: '', organization: '' };
   }
 
@@ -500,13 +509,23 @@
               <p class="text-sm font-medium" style="color:var(--text)">{cardOcrStage}</p>
               <div class="rounded-full h-2 overflow-hidden" style="background:var(--bg-panel)">
                 <div
-                  class="h-full rounded-full transition-all duration-300"
+                  class="h-full rounded-full transition-all duration-500"
                   style="width:{cardOcrPct}%; background:var(--navy)"
                 ></div>
               </div>
-              <p class="text-xs" style="color:var(--text-muted)">
-                처음 실행 시 언어 팩(~25MB)을 다운로드합니다. 이후에는 캐시에서 로드됩니다.
+              <p class="text-xs font-mono" style="color:var(--text-muted)">
+                경과: {cardElapsed}초
               </p>
+              {#if cardElapsed >= 10}
+                <p class="text-xs" style="color:var(--text-muted)">
+                  최초 실행 시 언어 팩 ~5MB 다운로드 중입니다. 잠시만 기다려주세요.
+                </p>
+              {/if}
+              {#if cardElapsed >= 40}
+                <button class="btn-secondary text-xs py-1.5 px-3 mx-auto" on:click={resetCardScan}>
+                  취소하고 다시 시도
+                </button>
+              {/if}
             </div>
 
           {:else if cardStep === 'review'}
