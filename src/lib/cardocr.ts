@@ -105,13 +105,12 @@ export async function runOCR(
   const Tesseract = await loadTesseract();
   onProgress?.('언어 팩 다운로드 중… (최초 1회 ~5MB)', 8);
 
-  // Use fast tessdata (~5 MB total) instead of best-quality (~14 MB)
-  // to avoid long first-load times on mobile connections.
-  const workerPromise = Tesseract.createWorker('kor+eng', 1, {
-    langPath: 'https://tessdata.projectnaptha.com/4.0.0_fast/',
+  // eng only (~4 MB, reliably cached) — fast enough for email/phone/org.
+  // Korean names missed by OCR can be typed in the review step.
+  const workerPromise = Tesseract.createWorker('eng', 1, {
     logger: (m: any) => {
       const p: number = m.progress ?? 0;
-      const s: string = m.status ?? '';
+      const s: string = (m.status ?? '') as string;
       if (s.includes('load')) {
         onProgress?.(`언어 팩 다운로드 중… ${Math.round(p * 100)}%`, 8 + Math.round(p * 42));
       } else if (s.includes('init')) {
@@ -193,6 +192,13 @@ export function parseBizCard(text: string): ParsedCard {
     // English: 2–3 capitalized words
     const enMatch = line.match(/^[A-Z][a-zA-Z\-']{1,20}(?:\s[A-Z][a-zA-Z\-']{1,20}){1,2}$/);
     if (enMatch) { name = enMatch[0]; break; }
+  }
+
+  // Fallback: derive from email local-part (e.g. jkim → J Kim, gildong.hong → Gildong Hong)
+  if (!name && email) {
+    const local = email.split('@')[0].replace(/[._\-]/g, ' ');
+    const words = local.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1));
+    if (words.length >= 1 && words[0].length >= 2) name = words.join(' ');
   }
 
   return { name, email, phone, organization };
