@@ -91,19 +91,25 @@
         cardOcrPct = pct;
       }, (line) => {
         cardDebugLog = [...cardDebugLog, line];
+      }).then(result => {
+        // Use the card-derived logotype as avatar immediately
+        if (result.logotype) cardCroppedUrl = result.logotype;
+        return result;
       });
 
       // 2b. jscanify perspective crop runs in parallel (best-effort, may lose race)
       const enhancedPromise = tryCropEnhanced(img);
 
-      const text = await ocrPromise;
+      const { text, logotype } = await ocrPromise;
 
-      // If jscanify already finished, use its result as the preview image
-      const enhanced = await Promise.race([
-        enhancedPromise,
-        Promise.resolve(null)
-      ]);
-      if (enhanced) cardCroppedUrl = enhanced.toDataURL('image/jpeg', 0.85);
+      // If jscanify finished, regenerate logotype from the perspective-corrected version
+      const enhanced = await Promise.race([enhancedPromise, Promise.resolve(null)]);
+      if (enhanced) {
+        const { makeLogotype } = await import('$lib/cardocr');
+        cardCroppedUrl = makeLogotype(enhanced);
+      } else if (logotype) {
+        cardCroppedUrl = logotype;
+      }
 
       // 3. Parse
       cardParsed = parseBizCard(text);
@@ -117,12 +123,12 @@
   }
 
   function applyCardData() {
-    form.commonName  = cardParsed.name         || form.commonName;
-    form.email       = cardParsed.email        || form.email;
-    form.phone       = cardParsed.phone        || form.phone;
+    form.commonName   = cardParsed.name         || form.commonName;
+    form.email        = cardParsed.email        || form.email;
+    form.phone        = cardParsed.phone        || form.phone;
     form.organization = cardParsed.organization || form.organization;
-    // Use (cropped) card image as avatar
-    avatarDataUrl = cardCroppedUrl || cardPreviewUrl;
+    // cardCroppedUrl is already the 256×256 logotype-ready image
+    if (cardCroppedUrl) avatarDataUrl = cardCroppedUrl;
     scanMode = 'manual';
     cardStep = 'capture';
   }

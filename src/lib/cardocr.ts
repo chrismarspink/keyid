@@ -94,7 +94,7 @@ function dbg(msg: string, onLog?: DebugLog) {
 }
 
 /** Resize canvas so the longest side ≤ maxPx, keeping aspect ratio. */
-function resizeCanvas(src: HTMLCanvasElement, maxPx = 1600): HTMLCanvasElement {
+function resizeCanvas(src: HTMLCanvasElement, maxPx: number): HTMLCanvasElement {
   const { width: w, height: h } = src;
   if (w <= maxPx && h <= maxPx) return src;
   const scale = maxPx / Math.max(w, h);
@@ -105,11 +105,65 @@ function resizeCanvas(src: HTMLCanvasElement, maxPx = 1600): HTMLCanvasElement {
   return c;
 }
 
+/** JPEG blob guaranteed to be ≤ maxBytes. Shrinks resolution then quality iteratively. */
+async function toBlobUnder(
+  src: HTMLCanvasElement,
+  maxBytes: number,
+  onLog?: DebugLog
+): Promise<{ blob: Blob; canvas: HTMLCanvasElement }> {
+  let canvas = src;
+  let quality = 0.85;
+
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const blob = await new Promise<Blob>(res =>
+      canvas.toBlob(b => res(b!), 'image/jpeg', quality)
+    );
+    const kb = (blob.size / 1024).toFixed(0);
+    dbg(`시도 ${attempt + 1}: ${canvas.width}×${canvas.height} q=${quality.toFixed(2)} → ${kb} KB`, onLog);
+    if (blob.size <= maxBytes) return { blob, canvas };
+
+    // First reduce quality, then reduce resolution
+    if (quality > 0.55) {
+      quality = Math.max(0.55, quality - 0.1);
+    } else {
+      canvas = resizeCanvas(canvas, Math.round(Math.max(canvas.width, canvas.height) * 0.75));
+      quality = 0.75;
+    }
+  }
+  // Last resort
+  const blob = await new Promise<Blob>(res =>
+    canvas.toBlob(b => res(b!), 'image/jpeg', 0.5)
+  );
+  return { blob, canvas };
+}
+
+/**
+ * Create a logotype-sized image for the certificate (256×256 max, JPEG data URL).
+ * Crops to the center square if landscape, then resizes.
+ */
+export function makeLogotype(src: HTMLCanvasElement): string {
+  const size = 256;
+  const { width: w, height: h } = src;
+  const side = Math.min(w, h);
+  const sx = Math.round((w - side) / 2);
+  const sy = Math.round((h - side) / 4); // slightly above center looks better for cards
+
+  const c = document.createElement('canvas');
+  c.width = size; c.height = size;
+  c.getContext('2d')!.drawImage(src, sx, sy, side, side, 0, 0, size, size);
+  return c.toDataURL('image/jpeg', 0.88);
+}
+
+export interface OcrResult {
+  text: string;
+  logotype: string; // data URL, 256×256 JPEG — ready for certificate logotype
+}
+
 export async function runOCR(
   source: HTMLCanvasElement | HTMLImageElement,
   onProgress?: OcrProgress,
   onLog?: DebugLog
-): Promise<string> {
+): Promise<OcrResult> {
   _dbg.length = 0;
 
   // 1. Source → canvas
@@ -127,15 +181,16 @@ export async function runOCR(
 
   dbg(`원본 크기: ${canvas.width}×${canvas.height}`, onLog);
 
-  // 2. Resize — OCR.Space free key limit ~1 MB
-  canvas = resizeCanvas(canvas, 1600);
-  dbg(`리사이즈 후: ${canvas.width}×${canvas.height}`, onLog);
-
-  // 3. JPEG blob (quality 0.82 keeps it under ~500 KB)
-  const blob = await new Promise<Blob>(res =>
-    canvas.toBlob(b => res(b!), 'image/jpeg', 0.82)
-  );
-  dbg(`JPEG blob: ${(blob.size / 1024).toFixed(0)} KB`, onLog);
+  // 2. Guarantee ≤ 900 KB for OCR.Space free key
+  const MAX_OCR_BYTES = 900 * 1024;
+  const quick = await new Promise<Blob>(res => canvas.toBlob(b => res(b!), 'image/jpeg', 0.85));
+  if (quick.size > MAX_OCR_BYTES) {
+    onProgress?.(`이미지 크기 조정 중… (${(quick.size/1024).toFixed(0)} KB → 900 KB 이하)`, 12);
+    dbg(`크기 초과(${(quick.size/1024).toFixed(0)} KB) — 자동 압축 시작`, onLog);
+  }
+  const { blob, canvas: resized } = await toBlobUnder(canvas, MAX_OCR_BYTES, onLog);
+  canvas = resized;
+  dbg(`최종 blob: ${(blob.size/1024).toFixed(0)} KB`, onLog);
   onProgress?.('OCR 서버 전송 중…', 25);
 
   // 4. POST to OCR.Space with AbortController timeout
@@ -181,8 +236,12 @@ export async function runOCR(
 
   const text: string = json.ParsedResults?.[0]?.ParsedText ?? '';
   dbg(`추출 완료 — ${text.length}자\n${text.slice(0, 200)}`, onLog);
+
+  const logotype = makeLogotype(canvas);
+  dbg(`로고타입 생성 완료 (256×256)`, onLog);
+
   onProgress?.('완료', 100);
-  return text;
+  return { text, logotype };
 }
 
 // ─── Parsing ─────────────────────────────────────────────────────────────────
