@@ -2,58 +2,75 @@
  * Business card OCR pipeline (browser-only, zero external API).
  *
  * Pipeline:
- *  1. cropCard()  — jscanify + OpenCV.js perspective transform (lazy CDN load)
+ *  1. cropCard()  — raw image → canvas (instant).
+ *                   jscanify + OpenCV.js perspective transform attempted
+ *                   in the background with a 6-second timeout; if it wins
+ *                   the race the cropped canvas is used, otherwise the raw
+ *                   canvas is used immediately so OCR is never blocked.
  *  2. runOCR()    — Tesseract.js (kor + eng, cached in browser storage)
  *  3. parseBizCard() — regex-based field extraction
  */
 
-// ─── OpenCV + jscanify ──────────────────────────────────────────────────────
+// ─── Raw canvas helper ───────────────────────────────────────────────────────
 
-let _cvReady: Promise<unknown> | null = null;
-
-function loadOpenCV(): Promise<unknown> {
-  if (_cvReady) return _cvReady;
-  _cvReady = new Promise((resolve, reject) => {
-    const w = window as any;
-    if (w.cv?.Mat) { resolve(w.cv); return; }
-    const script = document.createElement('script');
-    // Use a stable 4.x build served over CDN
-    script.src = 'https://docs.opencv.org/4.10.0/opencv.js';
-    script.async = true;
-    script.onload = () => {
-      const poll = setInterval(() => {
-        if (w.cv?.Mat) { clearInterval(poll); resolve(w.cv); }
-      }, 50);
-      setTimeout(() => { clearInterval(poll); reject(new Error('OpenCV 초기화 시간 초과')); }, 30000);
-    };
-    script.onerror = () => reject(new Error('OpenCV 로드 실패'));
-    document.head.appendChild(script);
-  });
-  return _cvReady;
+function imgToCanvas(img: HTMLImageElement): HTMLCanvasElement {
+  const c = document.createElement('canvas');
+  c.width  = img.naturalWidth  || img.width;
+  c.height = img.naturalHeight || img.height;
+  c.getContext('2d')!.drawImage(img, 0, 0);
+  return c;
 }
 
-/**
- * Perspective-correct a business card image using jscanify + OpenCV.js.
- * Falls back to the original image rendered on a canvas if detection fails.
- */
-export async function cropCard(img: HTMLImageElement): Promise<HTMLCanvasElement> {
-  const fallback = (): HTMLCanvasElement => {
-    const c = document.createElement('canvas');
-    c.width  = img.naturalWidth  || img.width;
-    c.height = img.naturalHeight || img.height;
-    c.getContext('2d')!.drawImage(img, 0, 0);
-    return c;
-  };
+// ─── OpenCV + jscanify (best-effort, non-blocking) ───────────────────────────
+
+async function tryJscanify(img: HTMLImageElement): Promise<HTMLCanvasElement | null> {
+  // Race: load OpenCV within 6 s, otherwise give up
+  const cv = await Promise.race([
+    new Promise<unknown>((resolve, reject) => {
+      const w = window as any;
+      if (w.cv?.Mat) { resolve(w.cv); return; }
+      const script = document.createElement('script');
+      script.src = 'https://docs.opencv.org/4.10.0/opencv.js';
+      script.async = true;
+      script.onload = () => {
+        const poll = setInterval(() => {
+          if (w.cv?.Mat) { clearInterval(poll); resolve(w.cv); }
+        }, 50);
+        setTimeout(() => { clearInterval(poll); reject(); }, 8000);
+      };
+      script.onerror = () => reject();
+      document.head.appendChild(script);
+    }),
+    new Promise<null>((_, reject) => setTimeout(reject, 6000))
+  ]).catch(() => null);
+
+  if (!cv) return null;
 
   try {
-    await loadOpenCV();
     const { default: Jscanify } = await import('jscanify');
     const scanner = new (Jscanify as any)();
     const result = scanner.scanImage(img) as HTMLCanvasElement | null;
     if (result && result.width > 10) return result;
-  } catch { /* fall through to fallback */ }
+  } catch { /* ignore */ }
+  return null;
+}
 
-  return fallback();
+/**
+ * Return a canvas ready for OCR.
+ * Immediately returns the raw canvas; the caller may optionally await
+ * the jscanify enhancement via the returned promise pair.
+ */
+export async function cropCard(img: HTMLImageElement): Promise<HTMLCanvasElement> {
+  // Always resolve quickly with the raw canvas
+  return imgToCanvas(img);
+}
+
+/**
+ * Try perspective-correcting the image in the background.
+ * Resolves with the corrected canvas, or null if unavailable within timeout.
+ */
+export function tryCropEnhanced(img: HTMLImageElement): Promise<HTMLCanvasElement | null> {
+  return tryJscanify(img);
 }
 
 // ─── OCR ────────────────────────────────────────────────────────────────────

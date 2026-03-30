@@ -62,7 +62,7 @@
     cardOcrPct = 0;
 
     try {
-      // Load image
+      // Load image element
       const img = new Image();
       await new Promise<void>((res, rej) => {
         img.onload = () => res();
@@ -70,18 +70,31 @@
         img.src = cardPreviewUrl;
       });
 
-      // 1. Perspective crop (best-effort via jscanify/OpenCV)
-      cardOcrStage = '이미지 보정 중…';
-      cardOcrPct = 5;
-      const { cropCard, runOCR, parseBizCard } = await import('$lib/cardocr');
-      const canvas = await cropCard(img);
-      cardCroppedUrl = canvas.toDataURL('image/jpeg', 0.85);
+      const { cropCard, tryCropEnhanced, runOCR, parseBizCard } = await import('$lib/cardocr');
 
-      // 2. OCR
-      const text = await runOCR(canvas, (stage, pct) => {
+      // 1. Raw canvas — instant, no blocking
+      cardOcrStage = '텍스트 인식 준비 중…';
+      cardOcrPct = 5;
+      const rawCanvas = await cropCard(img);
+      cardCroppedUrl = rawCanvas.toDataURL('image/jpeg', 0.85);
+
+      // 2. OCR on raw canvas (starts immediately)
+      const ocrPromise = runOCR(rawCanvas, (stage, pct) => {
         cardOcrStage = stage;
         cardOcrPct = pct;
       });
+
+      // 2b. jscanify perspective crop runs in parallel (best-effort, may lose race)
+      const enhancedPromise = tryCropEnhanced(img);
+
+      const text = await ocrPromise;
+
+      // If jscanify already finished, use its result as the preview image
+      const enhanced = await Promise.race([
+        enhancedPromise,
+        Promise.resolve(null)
+      ]);
+      if (enhanced) cardCroppedUrl = enhanced.toDataURL('image/jpeg', 0.85);
 
       // 3. Parse
       cardParsed = parseBizCard(text);
