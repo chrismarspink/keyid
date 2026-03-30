@@ -73,37 +73,20 @@ export function tryCropEnhanced(img: HTMLImageElement): Promise<HTMLCanvasElemen
   return tryJscanify(img);
 }
 
-// ─── OCR (Tesseract.js loaded from CDN to avoid Vite worker-path issues) ────
-
-/** Load Tesseract.js v5 UMD bundle from CDN (sets window.Tesseract). */
-let _tessReady: Promise<any> | null = null;
-
-function loadTesseract(): Promise<any> {
-  if (_tessReady) return _tessReady;
-  _tessReady = new Promise((resolve, reject) => {
-    const w = window as any;
-    if (w.Tesseract?.createWorker) { resolve(w.Tesseract); return; }
-    const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
-    script.onload = () =>
-      w.Tesseract?.createWorker
-        ? resolve(w.Tesseract)
-        : reject(new Error('Tesseract 초기화 실패'));
-    script.onerror = () => reject(new Error('Tesseract CDN 로드 실패'));
-    document.head.appendChild(script);
-  });
-  return _tessReady;
-}
+// ─── OCR via OCR.Space free API ─────────────────────────────────────────────
+// Client-side Tesseract.js is broken in Vite/GitHub Pages (worker path issues).
+// OCR.Space provides free OCR (25,000 req/month, Korean support).
+// API key 'helloworld' = public demo key; replace with your own free key at
+// https://ocr.space/ocrapi/freekey for higher limits.
 
 export type OcrProgress = (stage: string, pct: number) => void;
 export type DebugLog = (msg: string) => void;
 
-// ── 디버그 로그 (화면 + 콘솔 동시 출력) ─────────────────────────────────────
 const _dbg: string[] = [];
 export function getDebugLog(): string[] { return _dbg; }
 
 function dbg(msg: string, onLog?: DebugLog) {
-  const ts = new Date().toISOString().slice(11, 23); // HH:mm:ss.mmm
+  const ts = new Date().toISOString().slice(11, 23);
   const line = `[${ts}] ${msg}`;
   console.log('[CardOCR]', line);
   _dbg.push(line);
@@ -115,49 +98,54 @@ export async function runOCR(
   onProgress?: OcrProgress,
   onLog?: DebugLog
 ): Promise<string> {
-  _dbg.length = 0; // reset
+  _dbg.length = 0;
 
-  dbg('loadTesseract() 시작', onLog);
-  onProgress?.('OCR 엔진 로드 중…', 3);
+  // Convert source to JPEG blob
+  dbg('이미지 변환 시작', onLog);
+  onProgress?.('이미지 준비 중…', 10);
+  const canvas = source instanceof HTMLCanvasElement
+    ? source
+    : (() => {
+        const c = document.createElement('canvas');
+        c.width = (source as HTMLImageElement).naturalWidth || source.width;
+        c.height = (source as HTMLImageElement).naturalHeight || source.height;
+        c.getContext('2d')!.drawImage(source, 0, 0);
+        return c;
+      })();
+  const blob = await new Promise<Blob>(res =>
+    canvas.toBlob(b => res(b!), 'image/jpeg', 0.85)
+  );
+  dbg(`blob size: ${(blob.size / 1024).toFixed(0)} KB`, onLog);
 
-  const Tesseract = await loadTesseract();
-  dbg(`Tesseract 로드 완료 — version: ${Tesseract.version ?? '?'}`, onLog);
-  dbg(`createWorker('eng', 1, ...) 호출`, onLog);
-  onProgress?.('언어 팩 다운로드 중… (최초 1회 ~4MB)', 8);
+  // POST to OCR.Space
+  onProgress?.('OCR 서버 전송 중…', 30);
+  dbg('OCR.Space API 호출', onLog);
 
-  const workerPromise = Tesseract.createWorker('eng', 1, {
-    logger: (m: any) => {
-      const raw = JSON.stringify(m);
-      dbg(`logger: ${raw}`, onLog);               // ← 모든 메시지 기록
+  const form = new FormData();
+  form.append('apikey', 'helloworld');   // free demo key — replace for production
+  form.append('language', 'kor');        // Korean (also recognises embedded English)
+  form.append('isOverlayRequired', 'false');
+  form.append('detectOrientation', 'true');
+  form.append('scale', 'true');
+  form.append('file', blob, 'card.jpg');
 
-      const p: number = m.progress ?? 0;
-      const s: string = (m.status ?? '') as string;
-      if (s.includes('load')) {
-        onProgress?.(`언어 팩 다운로드 중… ${Math.round(p * 100)}%`, 8 + Math.round(p * 42));
-      } else if (s.includes('init')) {
-        onProgress?.(`엔진 초기화 중… ${Math.round(p * 100)}%`, 50 + Math.round(p * 10));
-      } else if (s.includes('recogniz')) {
-        onProgress?.('텍스트 인식 중…', 60 + Math.round(p * 35));
-      }
-    }
+  const resp = await fetch('https://api.ocr.space/parse/image', {
+    method: 'POST',
+    body: form
   });
+  dbg(`HTTP ${resp.status}`, onLog);
+  if (!resp.ok) throw new Error(`OCR 서버 오류: ${resp.status}`);
 
-  // 30-second timeout (reduced from 90 so we fail fast for debugging)
-  const worker = await Promise.race([
-    workerPromise.then((w: any) => { dbg('createWorker() 완료', onLog); return w; }),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => {
-        dbg('⚠ createWorker 30초 타임아웃', onLog);
-        reject(new Error('시간 초과 (30s) — 아래 디버그 로그를 확인하세요'));
-      }, 30_000)
-    )
-  ]);
+  onProgress?.('텍스트 추출 중…', 70);
+  const json = await resp.json();
+  dbg(`응답: ${JSON.stringify(json).slice(0, 300)}`, onLog);
 
-  dbg(`worker.recognize() 시작 — source: ${source.width}×${(source as any).height}`, onLog);
-  onProgress?.('텍스트 인식 중…', 60);
-  const { data: { text } } = await worker.recognize(source);
-  dbg(`recognize() 완료 — 텍스트 ${text.length}자`, onLog);
-  await worker.terminate();
+  if (json.IsErroredOnProcessing) {
+    throw new Error(json.ErrorMessage?.[0] ?? 'OCR 처리 오류');
+  }
+
+  const text: string = json.ParsedResults?.[0]?.ParsedText ?? '';
+  dbg(`추출 완료 — ${text.length}자`, onLog);
   onProgress?.('완료', 100);
   return text;
 }

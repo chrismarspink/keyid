@@ -520,9 +520,9 @@
               <p class="text-xs font-mono" style="color:var(--text-muted)">
                 경과: {cardElapsed}초
               </p>
-              {#if cardElapsed >= 10}
+              {#if cardElapsed >= 8}
                 <p class="text-xs" style="color:var(--text-muted)">
-                  최초 실행 시 언어 팩 ~5MB 다운로드 중입니다. 잠시만 기다려주세요.
+                  OCR 서버와 통신 중입니다. 네트워크 상태에 따라 10~20초 소요됩니다.
                 </p>
               {/if}
               {#if cardElapsed >= 40}

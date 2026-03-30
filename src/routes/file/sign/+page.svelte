@@ -10,6 +10,7 @@
   import { unsealKey } from '$lib/crypto/protection';
   import { importPrivateKeyPkcs8 } from '$lib/crypto/keygen';
   import { signData, signThenEncrypt, signDataEmbedded, addCoSignerInfo, encryptForRecipients, packPkisFile } from '$lib/crypto/cms';
+  import { filesToPayload, isTar } from '$lib/tar';
   import { generateIdenticon } from '$lib/crypto/identicon';
   import { downloadFile, retrieveLaunchedFile } from '$lib/fileHandler';
   import { encodeToQRFrames } from '$lib/qr/bcur';
@@ -38,6 +39,7 @@
 
   // File & message
   let selectedFile: File | null = null;
+  let selectedFileCount = 1; // tracks original count when bundled into TAR
   let message = '';
   let signing = false;
   let done = false;
@@ -126,10 +128,16 @@
     if (launched) selectedFile = new File([launched.data], launched.name, { type: launched.type });
   });
 
-  function handleDrop(e: DragEvent) {
+  async function handleDrop(e: DragEvent) {
     e.preventDefault(); dropActive = false;
-    const file = e.dataTransfer?.files[0];
-    if (file) selectedFile = file;
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) await selectFiles(Array.from(files));
+  }
+
+  async function selectFiles(files: File[]) {
+    if (files.length === 0) return;
+    selectedFileCount = files.length;
+    selectedFile = await filesToPayload(files);
   }
 
   function formatBytes(n: number) {
@@ -693,10 +701,10 @@
                   d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
               </svg>
               <div class="text-sm" style="color:var(--text-muted)">파일을 끌어다 놓거나 클릭하여 선택</div>
-              <div class="text-xs mt-1" style="color:var(--text-dim)">모든 파일 형식 지원</div>
+              <div class="text-xs mt-1" style="color:var(--text-dim)">여러 파일 선택 가능 (자동으로 묶어 서명)</div>
             </button>
-            <input bind:this={fileInput} type="file" class="hidden"
-              on:change={(e) => { const f = e.currentTarget.files?.[0]; if (f) selectedFile = f; }} />
+            <input bind:this={fileInput} type="file" multiple class="hidden"
+              on:change={(e) => { const fl = e.currentTarget.files; if (fl && fl.length > 0) selectFiles(Array.from(fl)); }} />
           {:else}
             <div class="flex items-center gap-3 p-4 rounded-xl" style="background:rgba(59,130,246,0.12)">
               <svg class="w-8 h-8 flex-shrink-0" style="color:var(--navy-light)" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -705,9 +713,11 @@
               </svg>
               <div class="flex-1 min-w-0">
                 <div class="font-medium truncate" style="color:var(--text)">{selectedFile.name}</div>
-                <div class="text-xs" style="color:var(--text-muted)">{formatBytes(selectedFile.size)}</div>
+                <div class="text-xs" style="color:var(--text-muted)">
+                  {selectedFileCount > 1 ? `${selectedFileCount}개 파일 묶음 · ` : ''}{formatBytes(selectedFile.size)}
+                </div>
               </div>
-              <button on:click={() => (selectedFile = null)} class="btn-icon" style="color:var(--text-dim)">
+              <button on:click={() => { selectedFile = null; selectedFileCount = 1; }} class="btn-icon" style="color:var(--text-dim)">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                 </svg>
