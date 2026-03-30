@@ -54,6 +54,7 @@
   let cardError = '';
   let cardElapsed = 0;
   let _cardTimer: ReturnType<typeof setInterval> | null = null;
+  let cardDebugLog: string[] = [];
   let cardParsed = { name: '', email: '', phone: '', organization: '' };
 
   async function processCard() {
@@ -75,6 +76,7 @@
         img.src = cardPreviewUrl;
       });
 
+      cardDebugLog = [];
       const { cropCard, tryCropEnhanced, runOCR, parseBizCard } = await import('$lib/cardocr');
 
       // 1. Raw canvas — instant, no blocking
@@ -87,6 +89,8 @@
       const ocrPromise = runOCR(rawCanvas, (stage, pct) => {
         cardOcrStage = stage;
         cardOcrPct = pct;
+      }, (line) => {
+        cardDebugLog = [...cardDebugLog, line];
       });
 
       // 2b. jscanify perspective crop runs in parallel (best-effort, may lose race)
@@ -525,6 +529,24 @@
                 <button class="btn-secondary text-xs py-1.5 px-3 mx-auto" on:click={resetCardScan}>
                   취소하고 다시 시도
                 </button>
+              {/if}
+
+              <!-- 디버그 로그 패널 -->
+              {#if cardDebugLog.length > 0}
+                <div class="text-left rounded-lg overflow-hidden" style="background:#0d1117; border:1px solid #30363d">
+                  <div class="px-3 py-1.5 text-xs font-mono font-bold" style="background:#161b22; color:#58a6ff">
+                    DEBUG LOG ({cardDebugLog.length}줄)
+                  </div>
+                  <div class="px-3 py-2 space-y-0.5 max-h-48 overflow-y-auto">
+                    {#each cardDebugLog as line}
+                      <div class="text-xs font-mono leading-snug" style="color:#e6edf3; white-space:pre-wrap; word-break:break-all">{line}</div>
+                    {/each}
+                  </div>
+                </div>
+              {:else}
+                <div class="text-xs font-mono rounded p-2" style="background:#0d1117; color:#6e7681">
+                  대기 중 — 로그 없음
+                </div>
               {/if}
             </div>
 

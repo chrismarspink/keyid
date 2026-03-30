@@ -96,40 +96,67 @@ function loadTesseract(): Promise<any> {
 }
 
 export type OcrProgress = (stage: string, pct: number) => void;
+export type DebugLog = (msg: string) => void;
+
+// ── 디버그 로그 (화면 + 콘솔 동시 출력) ─────────────────────────────────────
+const _dbg: string[] = [];
+export function getDebugLog(): string[] { return _dbg; }
+
+function dbg(msg: string, onLog?: DebugLog) {
+  const ts = new Date().toISOString().slice(11, 23); // HH:mm:ss.mmm
+  const line = `[${ts}] ${msg}`;
+  console.log('[CardOCR]', line);
+  _dbg.push(line);
+  onLog?.(line);
+}
 
 export async function runOCR(
   source: HTMLCanvasElement | HTMLImageElement,
-  onProgress?: OcrProgress
+  onProgress?: OcrProgress,
+  onLog?: DebugLog
 ): Promise<string> {
-  onProgress?.('OCR 엔진 로드 중…', 3);
-  const Tesseract = await loadTesseract();
-  onProgress?.('언어 팩 다운로드 중… (최초 1회 ~5MB)', 8);
+  _dbg.length = 0; // reset
 
-  // eng only (~4 MB, reliably cached) — fast enough for email/phone/org.
-  // Korean names missed by OCR can be typed in the review step.
+  dbg('loadTesseract() 시작', onLog);
+  onProgress?.('OCR 엔진 로드 중…', 3);
+
+  const Tesseract = await loadTesseract();
+  dbg(`Tesseract 로드 완료 — version: ${Tesseract.version ?? '?'}`, onLog);
+  dbg(`createWorker('eng', 1, ...) 호출`, onLog);
+  onProgress?.('언어 팩 다운로드 중… (최초 1회 ~4MB)', 8);
+
   const workerPromise = Tesseract.createWorker('eng', 1, {
     logger: (m: any) => {
+      const raw = JSON.stringify(m);
+      dbg(`logger: ${raw}`, onLog);               // ← 모든 메시지 기록
+
       const p: number = m.progress ?? 0;
       const s: string = (m.status ?? '') as string;
       if (s.includes('load')) {
         onProgress?.(`언어 팩 다운로드 중… ${Math.round(p * 100)}%`, 8 + Math.round(p * 42));
       } else if (s.includes('init')) {
-        onProgress?.('엔진 초기화 중…', 50 + Math.round(p * 10));
+        onProgress?.(`엔진 초기화 중… ${Math.round(p * 100)}%`, 50 + Math.round(p * 10));
       } else if (s.includes('recogniz')) {
         onProgress?.('텍스트 인식 중…', 60 + Math.round(p * 35));
       }
     }
   });
 
-  // 90-second hard timeout
+  // 30-second timeout (reduced from 90 so we fail fast for debugging)
   const worker = await Promise.race([
-    workerPromise,
+    workerPromise.then((w: any) => { dbg('createWorker() 완료', onLog); return w; }),
     new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('시간 초과 — 네트워크를 확인 후 다시 시도하세요')), 90_000)
+      setTimeout(() => {
+        dbg('⚠ createWorker 30초 타임아웃', onLog);
+        reject(new Error('시간 초과 (30s) — 아래 디버그 로그를 확인하세요'));
+      }, 30_000)
     )
   ]);
 
+  dbg(`worker.recognize() 시작 — source: ${source.width}×${(source as any).height}`, onLog);
+  onProgress?.('텍스트 인식 중…', 60);
   const { data: { text } } = await worker.recognize(source);
+  dbg(`recognize() 완료 — 텍스트 ${text.length}자`, onLog);
   await worker.terminate();
   onProgress?.('완료', 100);
   return text;
