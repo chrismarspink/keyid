@@ -73,7 +73,27 @@ export function tryCropEnhanced(img: HTMLImageElement): Promise<HTMLCanvasElemen
   return tryJscanify(img);
 }
 
-// ─── OCR ────────────────────────────────────────────────────────────────────
+// ─── OCR (Tesseract.js loaded from CDN to avoid Vite worker-path issues) ────
+
+/** Load Tesseract.js v5 UMD bundle from CDN (sets window.Tesseract). */
+let _tessReady: Promise<any> | null = null;
+
+function loadTesseract(): Promise<any> {
+  if (_tessReady) return _tessReady;
+  _tessReady = new Promise((resolve, reject) => {
+    const w = window as any;
+    if (w.Tesseract?.createWorker) { resolve(w.Tesseract); return; }
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+    script.onload = () =>
+      w.Tesseract?.createWorker
+        ? resolve(w.Tesseract)
+        : reject(new Error('Tesseract 초기화 실패'));
+    script.onerror = () => reject(new Error('Tesseract CDN 로드 실패'));
+    document.head.appendChild(script);
+  });
+  return _tessReady;
+}
 
 export type OcrProgress = (stage: string, pct: number) => void;
 
@@ -81,19 +101,23 @@ export async function runOCR(
   source: HTMLCanvasElement | HTMLImageElement,
   onProgress?: OcrProgress
 ): Promise<string> {
-  onProgress?.('언어 팩 준비 중…', 3);
-  const { createWorker } = await import('tesseract.js');
-  const worker = await createWorker(['kor', 'eng'], 1, {
+  onProgress?.('OCR 엔진 로드 중…', 3);
+  const Tesseract = await loadTesseract();
+  onProgress?.('언어 팩 로드 중…', 10);
+
+  const worker = await Tesseract.createWorker('kor+eng', 1, {
     logger: (m: { status: string; progress: number }) => {
-      if (m.status.includes('load')) {
-        onProgress?.('언어 팩 로드 중…', 3 + Math.round(m.progress * 12));
-      } else if (m.status.includes('init')) {
-        onProgress?.('초기화 중…', 15 + Math.round(m.progress * 5));
-      } else if (m.status.includes('recogniz')) {
-        onProgress?.('텍스트 인식 중…', 20 + Math.round(m.progress * 75));
+      const p = m.progress ?? 0;
+      if (m.status?.includes('load')) {
+        onProgress?.('언어 팩 로드 중…', 10 + Math.round(p * 20));
+      } else if (m.status?.includes('init')) {
+        onProgress?.('초기화 중…', 30 + Math.round(p * 10));
+      } else if (m.status?.includes('recogniz')) {
+        onProgress?.('텍스트 인식 중…', 40 + Math.round(p * 55));
       }
     }
   });
+
   const { data: { text } } = await worker.recognize(source);
   await worker.terminate();
   onProgress?.('완료', 100);
