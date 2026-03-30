@@ -77,7 +77,7 @@
       });
 
       cardDebugLog = [];
-      const { cropCard, tryCropEnhanced, runOCR, parseBizCard } = await import('$lib/cardocr');
+      const { cropCard, tryCropEnhanced, runOCR, parseBizCard, makeLogotype } = await import('$lib/cardocr');
 
       // 1. Raw canvas — instant, no blocking
       cardOcrStage = '텍스트 인식 준비 중…';
@@ -105,7 +105,6 @@
       // If jscanify finished, regenerate logotype from the perspective-corrected version
       const enhanced = await Promise.race([enhancedPromise, Promise.resolve(null)]);
       if (enhanced) {
-        const { makeLogotype } = await import('$lib/cardocr');
         cardCroppedUrl = makeLogotype(enhanced);
       } else if (logotype) {
         cardCroppedUrl = logotype;
