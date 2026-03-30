@@ -77,38 +77,22 @@
       });
 
       cardDebugLog = [];
-      const { cropCard, tryCropEnhanced, runOCR, parseBizCard, makeLogotype } = await import('$lib/cardocr');
+      const { imgToCanvas, runOCR, parseBizCard } = await import('$lib/cardocr');
 
-      // 1. Raw canvas — instant, no blocking
-      cardOcrStage = '텍스트 인식 준비 중…';
+      // 1. Image → canvas
+      cardOcrStage = '이미지 준비 중…';
       cardOcrPct = 5;
-      const rawCanvas = await cropCard(img);
-      cardCroppedUrl = rawCanvas.toDataURL('image/jpeg', 0.85);
+      const rawCanvas = imgToCanvas(img);
 
-      // 2. OCR on raw canvas (starts immediately)
-      const ocrPromise = runOCR(rawCanvas, (stage, pct) => {
+      // 2. OCR (compress + upload + parse)
+      const { text, logotype } = await runOCR(rawCanvas, (stage, pct) => {
         cardOcrStage = stage;
         cardOcrPct = pct;
       }, (line) => {
         cardDebugLog = [...cardDebugLog, line];
-      }).then(result => {
-        // Use the card-derived logotype as avatar immediately
-        if (result.logotype) cardCroppedUrl = result.logotype;
-        return result;
       });
 
-      // 2b. jscanify perspective crop runs in parallel (best-effort, may lose race)
-      const enhancedPromise = tryCropEnhanced(img);
-
-      const { text, logotype } = await ocrPromise;
-
-      // If jscanify finished, regenerate logotype from the perspective-corrected version
-      const enhanced = await Promise.race([enhancedPromise, Promise.resolve(null)]);
-      if (enhanced) {
-        cardCroppedUrl = makeLogotype(enhanced);
-      } else if (logotype) {
-        cardCroppedUrl = logotype;
-      }
+      if (logotype) cardCroppedUrl = logotype;
 
       // 3. Parse
       cardParsed = parseBizCard(text);

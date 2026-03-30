@@ -1,19 +1,12 @@
 /**
- * Business card OCR pipeline (browser-only, zero external API).
- *
- * Pipeline:
- *  1. cropCard()  — raw image → canvas (instant).
- *                   jscanify + OpenCV.js perspective transform attempted
- *                   in the background with a 6-second timeout; if it wins
- *                   the race the cropped canvas is used, otherwise the raw
- *                   canvas is used immediately so OCR is never blocked.
- *  2. runOCR()    — Tesseract.js (kor + eng, cached in browser storage)
- *  3. parseBizCard() — regex-based field extraction
+ * Business card OCR pipeline.
+ * Image → OCR.Space API → regex parse → { text, logotype }
+ * No jscanify / OpenCV / Tesseract dependencies (all caused module-load failures).
  */
 
-// ─── Raw canvas helper ───────────────────────────────────────────────────────
+// ─── Canvas helpers ───────────────────────────────────────────────────────────
 
-function imgToCanvas(img: HTMLImageElement): HTMLCanvasElement {
+export function imgToCanvas(img: HTMLImageElement): HTMLCanvasElement {
   const c = document.createElement('canvas');
   c.width  = img.naturalWidth  || img.width;
   c.height = img.naturalHeight || img.height;
@@ -21,79 +14,6 @@ function imgToCanvas(img: HTMLImageElement): HTMLCanvasElement {
   return c;
 }
 
-// ─── OpenCV + jscanify (best-effort, non-blocking) ───────────────────────────
-
-async function tryJscanify(img: HTMLImageElement): Promise<HTMLCanvasElement | null> {
-  // Race: load OpenCV within 6 s, otherwise give up
-  const cv = await Promise.race([
-    new Promise<unknown>((resolve, reject) => {
-      const w = window as any;
-      if (w.cv?.Mat) { resolve(w.cv); return; }
-      const script = document.createElement('script');
-      script.src = 'https://docs.opencv.org/4.10.0/opencv.js';
-      script.async = true;
-      script.onload = () => {
-        const poll = setInterval(() => {
-          if (w.cv?.Mat) { clearInterval(poll); resolve(w.cv); }
-        }, 50);
-        setTimeout(() => { clearInterval(poll); reject(); }, 8000);
-      };
-      script.onerror = () => reject();
-      document.head.appendChild(script);
-    }),
-    new Promise<null>((_, reject) => setTimeout(reject, 6000))
-  ]).catch(() => null);
-
-  if (!cv) return null;
-
-  try {
-    const { default: Jscanify } = await import('jscanify');
-    const scanner = new (Jscanify as any)();
-    const result = scanner.scanImage(img) as HTMLCanvasElement | null;
-    if (result && result.width > 10) return result;
-  } catch { /* ignore */ }
-  return null;
-}
-
-/**
- * Return a canvas ready for OCR.
- * Immediately returns the raw canvas; the caller may optionally await
- * the jscanify enhancement via the returned promise pair.
- */
-export async function cropCard(img: HTMLImageElement): Promise<HTMLCanvasElement> {
-  // Always resolve quickly with the raw canvas
-  return imgToCanvas(img);
-}
-
-/**
- * Try perspective-correcting the image in the background.
- * Resolves with the corrected canvas, or null if unavailable within timeout.
- */
-export function tryCropEnhanced(img: HTMLImageElement): Promise<HTMLCanvasElement | null> {
-  return tryJscanify(img);
-}
-
-// ─── OCR via OCR.Space free API ─────────────────────────────────────────────
-// Client-side Tesseract.js is broken in Vite/GitHub Pages (worker path issues).
-// OCR.Space provides free OCR (25,000 req/month, Korean support).
-// API key 'helloworld' = public demo key; replace with your own free key at
-// https://ocr.space/ocrapi/freekey for higher limits.
-
-export type OcrProgress = (stage: string, pct: number) => void;
-export type DebugLog = (msg: string) => void;
-
-const _dbg: string[] = [];
-export function getDebugLog(): string[] { return _dbg; }
-
-function dbg(msg: string, onLog?: DebugLog) {
-  const ts = new Date().toISOString().slice(11, 23);
-  const line = `[${ts}] ${msg}`;
-  console.log('[CardOCR]', line);
-  _dbg.push(line);
-  onLog?.(line);
-}
-
-/** Resize canvas so the longest side ≤ maxPx, keeping aspect ratio. */
 function resizeCanvas(src: HTMLCanvasElement, maxPx: number): HTMLCanvasElement {
   const { width: w, height: h } = src;
   if (w <= maxPx && h <= maxPx) return src;
@@ -105,24 +25,29 @@ function resizeCanvas(src: HTMLCanvasElement, maxPx: number): HTMLCanvasElement 
   return c;
 }
 
-/** JPEG blob guaranteed to be ≤ maxBytes. Shrinks resolution then quality iteratively. */
-async function toBlobUnder(
+/** Synchronous canvas → JPEG Blob via toDataURL (works on all browsers). */
+function canvasToJpegBlob(canvas: HTMLCanvasElement, quality: number): Blob {
+  const dataUrl = canvas.toDataURL('image/jpeg', quality);
+  const b64 = dataUrl.split(',')[1];
+  const raw = atob(b64);
+  const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+  return new Blob([arr], { type: 'image/jpeg' });
+}
+
+/** Reduce size iteratively until blob ≤ maxBytes. */
+function toBlobUnder(
   src: HTMLCanvasElement,
   maxBytes: number,
   onLog?: DebugLog
-): Promise<{ blob: Blob; canvas: HTMLCanvasElement }> {
+): { blob: Blob; canvas: HTMLCanvasElement } {
   let canvas = src;
   let quality = 0.85;
 
-  for (let attempt = 0; attempt < 8; attempt++) {
-    const blob = await new Promise<Blob>(res =>
-      canvas.toBlob(b => res(b!), 'image/jpeg', quality)
-    );
-    const kb = (blob.size / 1024).toFixed(0);
-    dbg(`시도 ${attempt + 1}: ${canvas.width}×${canvas.height} q=${quality.toFixed(2)} → ${kb} KB`, onLog);
+  for (let i = 0; i < 8; i++) {
+    const blob = canvasToJpegBlob(canvas, quality);
+    dbg(`압축 시도 ${i + 1}: ${canvas.width}×${canvas.height} q=${quality.toFixed(2)} → ${(blob.size / 1024).toFixed(0)} KB`, onLog);
     if (blob.size <= maxBytes) return { blob, canvas };
-
-    // First reduce quality, then reduce resolution
     if (quality > 0.55) {
       quality = Math.max(0.55, quality - 0.1);
     } else {
@@ -130,33 +55,46 @@ async function toBlobUnder(
       quality = 0.75;
     }
   }
-  // Last resort
-  const blob = await new Promise<Blob>(res =>
-    canvas.toBlob(b => res(b!), 'image/jpeg', 0.5)
-  );
-  return { blob, canvas };
+  return { blob: canvasToJpegBlob(canvas, 0.5), canvas };
 }
 
 /**
- * Create a logotype-sized image for the certificate (256×256 max, JPEG data URL).
- * Crops to the center square if landscape, then resizes.
+ * 256×256 logotype image (center-square crop) for the certificate.
+ * Returns a JPEG data URL.
  */
 export function makeLogotype(src: HTMLCanvasElement): string {
   const size = 256;
   const { width: w, height: h } = src;
   const side = Math.min(w, h);
   const sx = Math.round((w - side) / 2);
-  const sy = Math.round((h - side) / 4); // slightly above center looks better for cards
-
+  const sy = Math.round((h - side) / 4); // slightly above center for cards
   const c = document.createElement('canvas');
   c.width = size; c.height = size;
   c.getContext('2d')!.drawImage(src, sx, sy, side, side, 0, 0, size, size);
   return c.toDataURL('image/jpeg', 0.88);
 }
 
+// ─── Debug log ────────────────────────────────────────────────────────────────
+
+export type OcrProgress = (stage: string, pct: number) => void;
+export type DebugLog    = (msg: string) => void;
+
+const _dbg: string[] = [];
+export function getDebugLog(): string[] { return _dbg; }
+
+function dbg(msg: string, onLog?: DebugLog) {
+  const ts   = new Date().toISOString().slice(11, 23);
+  const line = `[${ts}] ${msg}`;
+  console.log('[CardOCR]', line);
+  _dbg.push(line);
+  onLog?.(line);
+}
+
+// ─── OCR via OCR.Space ────────────────────────────────────────────────────────
+
 export interface OcrResult {
-  text: string;
-  logotype: string; // data URL, 256×256 JPEG — ready for certificate logotype
+  text:     string;
+  logotype: string; // 256×256 JPEG data URL
 }
 
 export async function runOCR(
@@ -166,34 +104,37 @@ export async function runOCR(
 ): Promise<OcrResult> {
   _dbg.length = 0;
 
-  // 1. Source → canvas
+  // 1. Normalise to canvas
   dbg('이미지 변환 시작', onLog);
   onProgress?.('이미지 준비 중…', 5);
   let canvas = source instanceof HTMLCanvasElement
     ? source
-    : (() => {
-        const c = document.createElement('canvas');
-        c.width  = (source as HTMLImageElement).naturalWidth  || source.width;
-        c.height = (source as HTMLImageElement).naturalHeight || source.height;
-        c.getContext('2d')!.drawImage(source, 0, 0);
-        return c;
-      })();
+    : imgToCanvas(source as HTMLImageElement);
+  dbg(`원본: ${canvas.width}×${canvas.height}`, onLog);
 
-  dbg(`원본 크기: ${canvas.width}×${canvas.height}`, onLog);
+  // 2. Generate logotype before any resizing (best quality)
+  const logotype = makeLogotype(canvas);
+  dbg('로고타입 생성 완료 (256×256)', onLog);
 
-  // 2. Guarantee ≤ 900 KB for OCR.Space free key
-  const MAX_OCR_BYTES = 900 * 1024;
-  const quick = await new Promise<Blob>(res => canvas.toBlob(b => res(b!), 'image/jpeg', 0.85));
-  if (quick.size > MAX_OCR_BYTES) {
-    onProgress?.(`이미지 크기 조정 중… (${(quick.size/1024).toFixed(0)} KB → 900 KB 이하)`, 12);
-    dbg(`크기 초과(${(quick.size/1024).toFixed(0)} KB) — 자동 압축 시작`, onLog);
+  // 3. Compress to < 900 KB for OCR.Space free key
+  const MAX = 900 * 1024;
+  const quick = canvasToJpegBlob(canvas, 0.85);
+  dbg(`초기 blob: ${(quick.size / 1024).toFixed(0)} KB`, onLog);
+
+  let blob: Blob;
+  if (quick.size > MAX) {
+    onProgress?.(`이미지 크기 조정 중… (${(quick.size / 1024).toFixed(0)} KB → 900 KB 이하)`, 12);
+    dbg('크기 초과 — 자동 압축 시작', onLog);
+    const result = toBlobUnder(canvas, MAX, onLog);
+    blob = result.blob;
+    canvas = result.canvas;
+  } else {
+    blob = quick;
   }
-  const { blob, canvas: resized } = await toBlobUnder(canvas, MAX_OCR_BYTES, onLog);
-  canvas = resized;
-  dbg(`최종 blob: ${(blob.size/1024).toFixed(0)} KB`, onLog);
+  dbg(`최종 blob: ${(blob.size / 1024).toFixed(0)} KB`, onLog);
   onProgress?.('OCR 서버 전송 중…', 25);
 
-  // 4. POST to OCR.Space with AbortController timeout
+  // 4. POST to OCR.Space
   const ctrl  = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 30_000);
 
@@ -223,7 +164,6 @@ export async function runOCR(
   }
   clearTimeout(timer);
   dbg(`HTTP ${resp.status}`, onLog);
-
   if (!resp.ok) throw new Error(`OCR 서버 오류: HTTP ${resp.status}`);
 
   onProgress?.('텍스트 추출 중…', 70);
@@ -235,16 +175,12 @@ export async function runOCR(
   }
 
   const text: string = json.ParsedResults?.[0]?.ParsedText ?? '';
-  dbg(`추출 완료 — ${text.length}자\n${text.slice(0, 200)}`, onLog);
-
-  const logotype = makeLogotype(canvas);
-  dbg(`로고타입 생성 완료 (256×256)`, onLog);
-
+  dbg(`추출 완료 — ${text.length}자\n${text.slice(0, 300)}`, onLog);
   onProgress?.('완료', 100);
   return { text, logotype };
 }
 
-// ─── Parsing ─────────────────────────────────────────────────────────────────
+// ─── Parsing ──────────────────────────────────────────────────────────────────
 
 export interface ParsedCard {
   name:         string;
@@ -253,46 +189,39 @@ export interface ParsedCard {
   organization: string;
 }
 
-const ORG_RE = /(주식회사|유한회사|\(주\)|\(유\)|법인|그룹|홀딩스|파트너스|어소시에이츠|Corp\.?|Inc\.?|Ltd\.?|LLC\.?|Co\.|Group|Solutions?|Systems?|Tech|Labs?|Studio|Global|Korea|International)/i;
-
-// Top-30 Korean surnames
+const ORG_RE = /(주식회사|유한회사|\(주\)|\(유\)|법인|그룹|홀딩스|파트너스|Corp\.?|Inc\.?|Ltd\.?|LLC\.?|Co\.|Group|Solutions?|Systems?|Tech|Labs?|Studio|Global|Korea|International)/i;
 const KR_SURNAMES = '김이박최정강조윤장임한오서신권황안송류전홍고문손양배백허유남심노하곽성차주우구민나진지엄채원천방공';
 
 export function parseBizCard(text: string): ParsedCard {
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
 
-  // ① Email — highest confidence
+  // ① Email
   const email = text.match(/[\w._%+\-]+@[\w.\-]+\.[a-zA-Z]{2,}/)?.[0] ?? '';
 
-  // ② Phone — Korean mobile / landline (handles 010.3418.6434 and 010. 3418. 6434)
+  // ② Phone (handles 010.3418.6434 and 010. 3418. 6434)
   const phoneRaw = text.match(
-    /(?:\+82[\s\-.]?)?0?(?:10|2|31|32|33|41|42|43|44|51|52|53|54|55|61|62|63|64|70|80|1[0-9]{3})[\s\-.]\s*\d{3,4}[\s\-.]\s*\d{4}/
+    /(?:\+82[\s\-.]+)?0?(?:10|2|31|32|33|41|42|43|44|51|52|53|54|55|61|62|63|64|70|80|1[0-9]{3})[\s\-.]\s*\d{3,4}[\s\-.]\s*\d{4}/
   )?.[0] ?? '';
   const phone = phoneRaw.replace(/[\s.]/g, '-').replace(/-+/g, '-');
 
-  // ③ Organization — lines matching company keywords
+  // ③ Organization
   let organization = '';
   for (const line of lines) {
-    if (ORG_RE.test(line) && line.length < 80) {
-      organization = line.trim();
-      break;
-    }
+    if (ORG_RE.test(line) && line.length < 80) { organization = line.trim(); break; }
   }
-  // Fallback: infer from email domain
   if (!organization && email) {
     const dom = email.split('@')[1]?.split('.')[0] ?? '';
     if (dom) organization = dom.charAt(0).toUpperCase() + dom.slice(1);
   }
 
-  // ④ Name — pattern based
+  // ④ Name — must be at START of line (avoids job titles like 이사, 부장)
   let name = '';
   for (const line of lines) {
     if (line.includes('@') || ORG_RE.test(line)) continue;
     if (/\d{3}/.test(line)) continue;
     if (line === organization) continue;
 
-    // Korean name: must be at the START of the line (surname + 1–2 chars, optional spaces)
-    // Handles "김진규", "김 진 규", "김진규 그룹장…" correctly
+    // Korean: "김진규" or "김 진 규 그룹장…" → 김진규
     const krStart = line.match(
       new RegExp(`^([${KR_SURNAMES}]\\s?[\\uAC00-\\uD7A3]\\s?[\\uAC00-\\uD7A3]?)(?:\\s|[^\\uAC00-\\uD7A3]|$)`)
     );
@@ -301,12 +230,12 @@ export function parseBizCard(text: string): ParsedCard {
       if (kr.length >= 2 && kr.length <= 4) { name = kr; break; }
     }
 
-    // English: "KIM, Jin-Kyu" / "Kim Jin-Kyu" / "HONG GILDONG"
+    // English: "KIM, Jin-Kyu" / "Kim Jin-Kyu"
     const enMatch = line.match(/^([A-Z][A-Z\-']{1,15}),?\s+([A-Z][a-zA-Z\-']{1,15})(?:\s[A-Z][a-zA-Z\-']{1,15})?$/);
     if (enMatch) { name = `${enMatch[1]} ${enMatch[2]}`; break; }
   }
 
-  // Fallback: derive from email local-part (jkkim → Jkkim)
+  // Fallback: derive from email local-part
   if (!name && email) {
     const local = email.split('@')[0].replace(/[._\-]/g, ' ');
     const words = local.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1));
