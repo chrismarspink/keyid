@@ -2,43 +2,43 @@
   "name": "KeyID — 디지털 신원",
   "short_name": "KeyID",
   "description": "PKI 기반 디지털 신원 인증 — 서명, 암호화, 검증",
+  "id": "/keyid/",
   "start_url": "/keyid/",
   "scope": "/keyid/",
   "display": "standalone",
-  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "display_override": ["standalone", "minimal-ui"],
   "orientation": "portrait-primary",
   "background_color": "#1e2433",
   "theme_color": "#141926",
   "lang": "ko",
-  "id": "com.keyid.app",
   "categories": ["productivity", "utilities"],
   "icons": [
     {
-      "src": "/icons/icon-192.png",
+      "src": "icons/icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/icons/icon-192.png",
+      "src": "icons/icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "maskable"
     },
     {
-      "src": "/icons/icon-512.png",
+      "src": "icons/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/icons/icon-512.png",
+      "src": "icons/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"
     },
     {
-      "src": "/icons/icon.svg",
+      "src": "icons/icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any"
@@ -47,38 +47,38 @@
   "screenshots": [],
   "file_handlers": [
     {
-      "action": "/file/sign",
+      "action": "/keyid/file/sign",
       "accept": { "application/pkis": [".pkis"] },
-      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }],
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }],
       "launch_type": "single-client"
     },
     {
-      "action": "/file/cert",
+      "action": "/keyid/file/cert",
       "accept": { "application/pkis-cert": [".pkis-cert"] },
-      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }],
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }],
       "launch_type": "single-client"
     },
     {
-      "action": "/file/request",
+      "action": "/keyid/file/request",
       "accept": { "application/pkis-req": [".pkis-req"] },
-      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }],
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }],
       "launch_type": "single-client"
     },
     {
-      "action": "/file/key",
+      "action": "/keyid/file/key",
       "accept": { "application/pkis-key": [".pkis-key"] },
-      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }],
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }],
       "launch_type": "single-client"
     },
     {
-      "action": "/file/verify",
+      "action": "/keyid/file/verify",
       "accept": { "application/pkis-sig": [".pkis-sig"] },
-      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }],
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }],
       "launch_type": "single-client"
     }
   ],
   "share_target": {
-    "action": "/share",
+    "action": "/keyid/share",
     "method": "POST",
     "enctype": "multipart/form-data",
     "params": {
@@ -91,6 +91,6 @@
     }
   },
   "protocol_handlers": [
-    { "protocol": "web+keyid", "url": "/protocol?url=%s" }
+    { "protocol": "web+keyid", "url": "/keyid/protocol?url=%s" }
   ]
 }
