@@ -482,7 +482,7 @@
                   bind:this={cardInput}
                   type="file"
                   accept="image/*"
-                  capture="environment"
+
                   class="hidden"
                   on:change={(e) => {
                     const f = e.currentTarget.files?.[0];
